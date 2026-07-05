@@ -27,6 +27,7 @@ import type {
   ProviderConfig,
 } from "./types";
 import { LLMError } from "./types";
+import { recordUsage } from "./usage";
 
 const clients = new Map<string, OpenAI>();
 function getClient(cfg: ProviderConfig, apiKey: string): OpenAI {
@@ -75,16 +76,26 @@ export async function chat({
 
       attempts++;
       try {
-        const text = await callOnce(cfg, keyIdx, messages, options);
+        const { text, usage } = await callOnce(cfg, keyIdx, messages, options);
         markCall(cfg.name, keyIdx);
         const model = options.lite && cfg.liteModel ? cfg.liteModel : cfg.chatModel;
+        const elapsedMs = Date.now() - startedAt;
+        recordUsage({
+          provider: cfg.name,
+          model,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          elapsedMs,
+          attempts,
+        });
         return {
           text,
           provider: cfg.name,
           model,
           keyIndex: keyIdx,
           attempts,
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs,
         };
       } catch (err) {
         lastErr = err;
@@ -123,12 +134,17 @@ export async function chat({
   );
 }
 
+interface CallOnceResult {
+  text: string;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
 async function callOnce(
   cfg: ProviderConfig,
   keyIdx: number,
   messages: ChatTurn[],
   options: ChatOptions,
-): Promise<string> {
+): Promise<CallOnceResult> {
   const client = getClient(cfg, cfg.keys[keyIdx]);
   const model = options.lite && cfg.liteModel ? cfg.liteModel : cfg.chatModel;
   const controller = new AbortController();
@@ -151,7 +167,15 @@ async function callOnce(
       { signal: controller.signal },
     );
     const raw = res.choices?.[0]?.message?.content ?? "";
-    return stripReasoning(raw);
+    const u = res.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+    return {
+      text: stripReasoning(raw),
+      usage: {
+        promptTokens: u?.prompt_tokens ?? 0,
+        completionTokens: u?.completion_tokens ?? 0,
+        totalTokens: u?.total_tokens ?? 0,
+      },
+    };
   } finally {
     clearTimeout(t);
   }

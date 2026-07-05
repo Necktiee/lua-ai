@@ -14,6 +14,7 @@ import {
   ChatCircleDots,
   GoogleLogo,
   Gear,
+  ChartBar,
 } from "@phosphor-icons/react";
 
 interface Profile {
@@ -105,6 +106,16 @@ interface Msg {
   created_at: string;
 }
 
+interface UsageData {
+  summary: {
+    totalCalls: number;
+    totalTokens: number;
+    byProvider: Record<string, { calls: number; totalTokens: number; avgElapsedMs: number }>;
+  };
+  recent: Array<{ provider: string; model: string; total_tokens: number; created_at: string }>;
+  error?: string;
+}
+
 function fmtDate(iso?: string | null) {
   if (!iso) return "";
   try {
@@ -182,12 +193,13 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
+  const [usage, setUsage] = useState<UsageData | null>(null);
   const [newTodo, setNewTodo] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes] = await Promise.all([
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes] = await Promise.all([
       fetch("/api/dashboard/status").then((r) => r.json()),
       fetch("/api/dashboard/todos?filter=pending").then((r) => r.json()),
       fetch("/api/dashboard/calendar?days=7").then((r) => r.json()),
@@ -196,6 +208,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       fetch("/api/dashboard/journal?limit=5").then((r) => r.json()),
       fetch("/api/dashboard/followups").then((r) => r.json()),
       fetch("/api/dashboard/messages?limit=20").then((r) => r.json()),
+      fetch("/api/dashboard/usage").then((r) => r.json()),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -208,6 +221,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setJournal(journalRes.entries ?? []);
     setFollowUps(fuRes.followUps ?? []);
     setMessages(msgRes.messages ?? []);
+    setUsage(usageRes ?? null);
     setLoaded(true);
   }, []);
 
@@ -528,6 +542,34 @@ export default function Dashboard({ profile }: { profile: Profile }) {
           </ul>
         )}
       </Card>
+
+      {usage && (
+        <Card
+          title="การใช้งาน AI (7 วัน)"
+          icon={<ChartBar weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+        >
+          {usage.error || usage.summary.totalCalls === 0 ? (
+            <p className="text-sm text-zinc-400">ยังไม่มีข้อมูลการใช้งาน</p>
+          ) : (
+            <>
+              <p className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-2">
+                {usage.summary.totalTokens.toLocaleString()} tokens
+                <span className="text-sm text-zinc-400 font-normal ml-2">{usage.summary.totalCalls} calls</span>
+              </p>
+              <div className="space-y-1">
+                {Object.entries(usage.summary.byProvider).map(([provider, stats]) => (
+                  <div key={provider} className="flex justify-between text-xs text-zinc-500">
+                    <span>{provider}</span>
+                    <span>
+                      {stats.calls} calls · {stats.totalTokens.toLocaleString()} tokens · ~{stats.avgElapsedMs}ms
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
