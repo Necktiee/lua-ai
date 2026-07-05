@@ -77,6 +77,12 @@ const EnvSchema = z.object({
 
   // Tavily web search (optional — goal.search)
   TAVILY_API_KEY: z.string().optional(),
+
+  // LIFF dashboard (LINE Login channel — แยกจาก Messaging API channel)
+  LIFF_ID: z.string().optional(),
+  LIFF_CHANNEL_ID: z.string().optional(),
+  // secret เซ็น session cookie ของ dashboard (fallback ไปที่ LINE_CHANNEL_SECRET ถ้าไม่ตั้ง)
+  SESSION_SECRET: z.string().optional(),
 });
 
 function load(): Env {
@@ -146,6 +152,8 @@ const fallbackDefaults: Env = {
   OPENWEATHER_API_KEY: undefined,
   WEATHER_LOCATION: "Bangkok,TH",
   TAVILY_API_KEY: undefined,
+  LIFF_ID: undefined,
+  LIFF_CHANNEL_ID: undefined,
 };
 
 export const env = load();
@@ -166,4 +174,7 @@ export function hasGoogleCalendar() {
 }
 export function hasWebSearch() {
   return Boolean(env.TAVILY_API_KEY);
+}
+export function hasLiff() {
+  return Boolean(env.LIFF_ID && env.LIFF_CHANNEL_ID);
 }

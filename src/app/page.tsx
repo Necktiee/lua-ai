@@ -1,4 +1,4 @@
-import { env, hasLine, hasSupabase, hasQStash, hasGoogleCalendar } from "@/lib/env";
+import { env, hasLine, hasSupabase, hasQStash, hasGoogleCalendar, hasWebSearch, hasLiff } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +20,8 @@ export default async function Home() {
           <Row ok={hasSupabase()} label="Supabase" />
           <Row ok={hasQStash()} label="QStash" />
           <Row ok={hasGoogleCalendar()} label="Google Calendar" />
+          <Row ok={hasWebSearch()} label="Web search (Tavily)" />
+          <Row ok={hasLiff()} label="LIFF dashboard" />
         </section>
 
         <section className="space-y-1 text-sm">
