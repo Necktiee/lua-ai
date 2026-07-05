@@ -74,7 +74,9 @@ export async function POST(req: Request) {
           );
           continue;
         }
-        const state = await signOAuthState(userId);
+        const { canonicalUserId } = await import("@/lib/auth/owner");
+        const ownerId = canonicalUserId(userId);
+        const state = await signOAuthState(ownerId);
         const url = `${env.APP_BASE_URL.replace(/\/$/, "")}/api/cal/connect?state=${encodeURIComponent(state)}`;
         await pushText(userId, `เปิดลิงก์นี้เพื่อเชื่อม Google Calendar:\n${url}`);
         continue;

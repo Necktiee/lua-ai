@@ -63,7 +63,9 @@ export interface HandleInput {
 }
 
 export async function handle(input: HandleInput): Promise<Reply> {
-  const { userId } = input;
+  // Single-owner mode: remap any incoming userId to the canonical owner.
+  const { canonicalUserId } = await import("@/lib/auth/owner");
+  const userId = canonicalUserId(input.userId);
   await touchUser(userId, input.displayName);
 
   // บันทึกฝั่ง user

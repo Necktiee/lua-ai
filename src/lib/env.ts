@@ -83,6 +83,10 @@ const EnvSchema = z.object({
   LIFF_CHANNEL_ID: z.string().optional(),
   // secret เซ็น session cookie ของ dashboard (fallback ไปที่ LINE_CHANNEL_SECRET ถ้าไม่ตั้ง)
   SESSION_SECRET: z.string().optional(),
+
+  // Single-owner mode: ถ้าตั้งค่าไว้ ทุก message/event/dashboard session จะถูก attribute
+  // เข้า userId นี้หมด ไม่ว่าจะแชท/ล็อกอินด้วย LINE account ไหน (whitelist ยังเช็คก่อน)
+  OWNER_LINE_USER_ID: z.string().optional(),
 });
 
 function load(): Env {
@@ -154,6 +158,7 @@ const fallbackDefaults: Env = {
   TAVILY_API_KEY: undefined,
   LIFF_ID: undefined,
   LIFF_CHANNEL_ID: undefined,
+  OWNER_LINE_USER_ID: undefined,
 };
 
 export const env = load();
