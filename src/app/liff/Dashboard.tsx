@@ -1,6 +1,20 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import {
+  CheckCircle,
+  Circle,
+  Plus,
+  ListChecks,
+  CalendarBlank,
+  Wallet,
+  Target,
+  Clock,
+  BookOpen,
+  ChatCircleDots,
+  GoogleLogo,
+  Gear,
+} from "@phosphor-icons/react";
 
 interface Profile {
   userId: string;
@@ -120,16 +134,41 @@ function Pill({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <section className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-100 dark:border-zinc-800 p-5">
-      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-3">{title}</h2>
+      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-3">
+        {icon}
+        {title}
+      </h2>
       {children}
     </section>
   );
 }
 
-const priMark = (p: number) => (p === 1 ? "🔴" : p === 3 ? "🟢" : "🟡");
+function PriorityDot({ p }: { p: 1 | 2 | 3 }) {
+  const cls = p === 1 ? "bg-red-500" : p === 3 ? "bg-zinc-300 dark:bg-zinc-600" : "bg-amber-500";
+  const label = p === 1 ? "ด่วน" : p === 3 ? "ไม่รีบ" : "ปกติ";
+  return <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${cls}`} title={label} aria-label={label} />;
+}
+
+function CardSkeleton() {
+  return (
+    <section className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-100 dark:border-zinc-800 p-5 space-y-3">
+      <div className="h-3.5 w-24 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+      <div className="h-3 w-full rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+      <div className="h-3 w-4/5 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+    </section>
+  );
+}
 
 export default function Dashboard({ profile }: { profile: Profile }) {
   const [statusData, setStatusData] = useState<StatusData | null>(null);
@@ -216,7 +255,20 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   };
 
   if (!loaded) {
-    return <p className="text-center text-zinc-400 text-sm py-10">กำลังโหลด dashboard...</p>;
+    return (
+      <div className="w-full max-w-2xl mx-auto space-y-4 p-4 pb-16">
+        <div className="flex items-center gap-3 py-2">
+          <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+          <div className="space-y-1.5">
+            <div className="h-3.5 w-28 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+            <div className="h-3 w-20 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+          </div>
+        </div>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <CardSkeleton key={i} />
+        ))}
+      </div>
+    );
   }
 
   return (
@@ -233,7 +285,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       </div>
 
       {statusData && (
-        <Card title="สถานะระบบ">
+        <Card title="สถานะระบบ" icon={<Gear weight="fill" className="w-4 h-4 text-zinc-400" />}>
           <div className="flex flex-wrap gap-2 mb-3">
             <Pill ok={statusData.status.hasLine} label="LINE" />
             <Pill ok={statusData.status.hasSupabase} label="Database" />
@@ -259,8 +311,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
             {!statusData.google.connected && (
               <button
                 onClick={connectGoogle}
-                className="text-xs px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 whitespace-nowrap"
               >
+                <GoogleLogo weight="bold" className="w-3.5 h-3.5" />
                 เชื่อม Google
               </button>
             )}
@@ -268,7 +321,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         </Card>
       )}
 
-      <Card title={`งานค้าง (${todos.length})`}>
+      <Card
+        title={`งานค้าง (${todos.length})`}
+        icon={<ListChecks weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         <div className="flex gap-2 mb-3">
           <input
             value={newTodo}
@@ -280,13 +336,14 @@ export default function Dashboard({ profile }: { profile: Profile }) {
           <button
             onClick={addTodo}
             disabled={busy}
-            className="text-sm px-3 py-2 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 disabled:opacity-50"
+            className="inline-flex items-center gap-1 text-sm px-3 py-2 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 disabled:opacity-50"
           >
+            <Plus weight="bold" className="w-3.5 h-3.5" />
             เพิ่ม
           </button>
         </div>
         {todos.length === 0 ? (
-          <p className="text-sm text-zinc-400">ไม่มีงานค้าง 🎉</p>
+          <p className="text-sm text-zinc-400">ไม่มีงานค้าง</p>
         ) : (
           <ul className="space-y-1.5">
             {todos.map((t) => (
@@ -296,7 +353,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   className="w-4 h-4 rounded border border-zinc-300 dark:border-zinc-600 flex-shrink-0"
                   aria-label="complete"
                 />
-                <span>{priMark(t.priority)}</span>
+                <PriorityDot p={t.priority} />
                 <span className="flex-1 text-zinc-700 dark:text-zinc-300">{t.title}</span>
                 {t.due_at && <span className="text-xs text-zinc-400">{fmtDate(t.due_at)}</span>}
               </li>
@@ -305,7 +362,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="ปฏิทิน 7 วันข้างหน้า">
+      <Card
+        title="ปฏิทิน 7 วันข้างหน้า"
+        icon={<CalendarBlank weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         {calError ? (
           <p className="text-sm text-zinc-400">{calError}</p>
         ) : events.length === 0 ? (
@@ -325,7 +385,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="ค่าใช้จ่ายเดือนนี้">
+      <Card
+        title="ค่าใช้จ่ายเดือนนี้"
+        icon={<Wallet weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         {expSummary && (
           <p className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-2">
             {expSummary.total.toLocaleString()} บาท
@@ -368,7 +431,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="เป้าหมาย">
+      <Card title="เป้าหมาย" icon={<Target weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}>
         {goals.length === 0 ? (
           <p className="text-sm text-zinc-400">ยังไม่มีเป้าหมาย</p>
         ) : (
@@ -395,7 +458,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="งานรอคำตอบ (Follow-up)">
+      <Card
+        title="งานรอคำตอบ (Follow-up)"
+        icon={<Clock weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         {followUps.length === 0 ? (
           <p className="text-sm text-zinc-400">ไม่มีงานรอคำตอบ</p>
         ) : (
@@ -418,7 +484,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="บันทึกประจำวันล่าสุด">
+      <Card
+        title="บันทึกประจำวันล่าสุด"
+        icon={<BookOpen weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         {journal.length === 0 ? (
           <p className="text-sm text-zinc-400">ยังไม่มีบันทึก</p>
         ) : (
@@ -433,7 +502,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         )}
       </Card>
 
-      <Card title="ประวัติแชทล่าสุด">
+      <Card
+        title="ประวัติแชทล่าสุด"
+        icon={<ChatCircleDots weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
         {messages.length === 0 ? (
           <p className="text-sm text-zinc-400">ยังไม่มีประวัติ</p>
         ) : (
@@ -445,7 +517,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                 <li key={m.id} className="text-xs">
                   <span
                     className={`font-medium mr-1 ${
-                      m.role === "user" ? "text-zinc-900 dark:text-zinc-100" : "text-blue-600 dark:text-blue-400"
+                      m.role === "user" ? "text-zinc-900 dark:text-zinc-100" : "text-emerald-600 dark:text-emerald-400"
                     }`}
                   >
                     {m.role === "user" ? "คุณ" : "โฮชิ"}:

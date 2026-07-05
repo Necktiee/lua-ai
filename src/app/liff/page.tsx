@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Robot, WarningCircle, ArrowClockwise } from "@phosphor-icons/react";
 import Dashboard from "./Dashboard";
 
 type Status = "loading" | "logging-in" | "verifying" | "ready" | "error";
@@ -84,31 +85,44 @@ export default function LiffPage() {
 
   if (status === "ready" && profile) {
     return (
-      <main className="min-h-screen bg-zinc-50 dark:bg-black font-sans">
+      <main className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-950 font-sans">
         <Dashboard profile={profile} />
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-black p-6 font-sans">
-      <div className="max-w-sm w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-lg p-8 space-y-4 text-center">
-        <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">โฮชิ Dashboard</h1>
+    <main className="min-h-[100dvh] flex flex-col items-center justify-center bg-zinc-50 dark:bg-zinc-950 p-6 font-sans">
+      <div className="max-w-sm w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-100 dark:border-zinc-800 p-8 space-y-5 text-center">
+        <div className="flex items-center justify-center gap-2">
+          <Robot weight="fill" className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 tracking-tight">โฮชิ Dashboard</h1>
+        </div>
 
-        {status === "loading" && <p className="text-zinc-500 text-sm">กำลังโหลด...</p>}
-        {status === "logging-in" && (
-          <p className="text-zinc-500 text-sm">กำลังพาไปเข้าสู่ระบบ LINE...</p>
-        )}
-        {status === "verifying" && (
-          <p className="text-zinc-500 text-sm">กำลังยืนยันตัวตน...</p>
+        {status !== "error" && (
+          <div className="space-y-3">
+            <div className="flex justify-center">
+              <span className="relative flex h-8 w-8">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-50" />
+                <span className="relative inline-flex rounded-full h-8 w-8 bg-emerald-500" />
+              </span>
+            </div>
+            <p className="text-zinc-500 dark:text-zinc-400 text-sm">
+              {status === "loading" && "กำลังโหลด..."}
+              {status === "logging-in" && "กำลังพาไปเข้าสู่ระบบ LINE..."}
+              {status === "verifying" && "กำลังยืนยันตัวตน..."}
+            </p>
+          </div>
         )}
         {status === "error" && (
-          <div className="space-y-2">
-            <p className="text-red-500 text-sm">{error}</p>
+          <div className="space-y-3">
+            <WarningCircle weight="fill" className="w-8 h-8 text-red-500 mx-auto" />
+            <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
             <button
               onClick={() => window.location.reload()}
-              className="text-sm px-4 py-2 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
             >
+              <ArrowClockwise weight="bold" className="w-4 h-4" />
               ลองใหม่
             </button>
           </div>
