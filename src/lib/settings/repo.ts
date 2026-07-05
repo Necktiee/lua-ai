@@ -6,6 +6,29 @@ import { requireDb } from "@/lib/db/client";
 import { BANGKOK, localHHMM } from "@/lib/tz";
 import type { UserSettings } from "@/lib/types";
 
+/**
+ * Cron ticks every CRON_WINDOW_MINUTES (see scripts/setup-schedules / QStash schedules),
+ * not every minute — Vercel Hobby + QStash free tier can't sustain per-minute polling
+ * for 5 routes within the 1000 msg/day budget. Matching helpers below treat a user's
+ * target HH:MM as "due" if `now` falls within [target, target + CRON_WINDOW_MINUTES).
+ * Safe because cron/dedup.ts already guarantees at most one push per user/kind/day.
+ */
+const CRON_WINDOW_MINUTES = 10;
+
+function minutesSinceMidnight(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+/** True if `nowHHMM` is within [targetHHMM, targetHHMM + CRON_WINDOW_MINUTES) minutes, wrapping midnight. */
+function isWithinCronWindow(nowHHMM: string, targetHHMM: string): boolean {
+  const now = minutesSinceMidnight(nowHHMM);
+  const target = minutesSinceMidnight(targetHHMM);
+  let diff = now - target;
+  if (diff < 0) diff += 24 * 60;
+  return diff < CRON_WINDOW_MINUTES;
+}
+
 const DEFAULTS: Omit<UserSettings, "user_id" | "updated_at"> = {
   briefing_time: "07:00",
   evening_time: "21:00",
@@ -85,14 +108,14 @@ export async function getUsersDueForBriefing(
     const targetTime = timeCol === "briefing_time" ? row.briefing_time : row.evening_time;
     const target = targetTime?.slice(0, 5) ?? "";
     const tz = row.timezone || BANGKOK;
-    if (localHHMM(now, tz) === target) {
+    if (target && isWithinCronWindow(localHHMM(now, tz), target)) {
       result.push({ userId: row.user_id, timezone: tz });
     }
   }
   return result;
 }
 
-/** Get users whose local HH:MM matches now (minute precision). */
+/** Get users whose local HH:MM falls in the current cron tick window. */
 export async function getUsersAtLocalTime(
   hour: number,
   minute: number,
@@ -113,7 +136,7 @@ export async function getUsersAtLocalTime(
   const result: Array<{ userId: string; timezone: string }> = [];
   for (const row of (data ?? []) as Array<{ user_id: string; timezone: string }>) {
     const tz = row.timezone || BANGKOK;
-    if (localHHMM(now, tz) === target) {
+    if (isWithinCronWindow(localHHMM(now, tz), target)) {
       result.push({ userId: row.user_id, timezone: tz });
     }
   }

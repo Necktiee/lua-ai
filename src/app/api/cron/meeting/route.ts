@@ -25,7 +25,10 @@ export async function GET(req: Request) {
       const upcoming = await getEventsStartingSoon(userId, 35);
       for (const event of upcoming) {
         const minsUntil = (new Date(event.start_at).getTime() - Date.now()) / 60_000;
-        if (minsUntil < 28 || minsUntil > 32) continue;
+        // Cron ticks every ~10min (QStash schedule) — widen from a narrow 28-32 band
+        // to a window that a 10-min tick can't skip. Dedup is via the `relations`
+        // claim below (per calendar_event, not per-day), so widening is safe.
+        if (minsUntil < 15 || minsUntil > 35) continue;
 
         const { data: existing } = await db
           .from("relations")
