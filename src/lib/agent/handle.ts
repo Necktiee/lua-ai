@@ -1,0 +1,644 @@
+/**
+ * Main agent — รับ LINE event → จัดการ → ส่งคำตอบกลับ
+ */
+import { chat } from "@/lib/llm/pool";
+import { classify } from "@/lib/intent/router";
+import { parseTimes } from "@/lib/intent/time";
+import { remember, recall, listRecent, summarizeForStorage, deleteMemory } from "@/lib/memory/store";
+import { logMessage, recentHistory } from "@/lib/memory/conversation";
+import { addTodo, listTodos, completeByIndex, cancelByIndex } from "@/lib/todo/repo";
+import { scheduleReminder, listUpcoming } from "@/lib/remind/schedule";
+import { createEvent, listEvents } from "@/lib/calendar/events";
+import { getAuthUrl } from "@/lib/calendar/events";
+import { touchUser } from "@/lib/db/client";
+import { BANGKOK } from "@/lib/tz";
+import type { ChatTurn } from "@/lib/llm/types";
+
+const PERSONA = `คุณคือ "เลขา" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว.
+นิสัย: สุภาพ กระชับ เป็นกันเอง ภาษาไทยเป็นหลัก ตอบสั้นทันใจ เหมือนคุยกับเพื่อนที่เก่งและจำเก่ง.
+หน้าที่หลัก: จด ค้นความจำ เตือนเวลา จัดการ to-do ลงปฏิทิน.
+หลักเกณฑ์:
+- ตอบคำถามทั่วไปได้ตามความรู้รอบตัว เช่น "ต้มไข่กี่นาที" "ประเทศไหนใหญ่สุด" ได้เลย เหมือนเพื่อนที่รู้เรื่องทั่วไป.
+- แต่ถ้าเป็นข้อมูลส่วนตัวของผู้ใช้ที่ไม่มีในความจำ ให้บอกตรงๆ ว่าไม่จำได้ ห้ามแต่ง.
+- เวลาตอบคำถาม ใช้ข้อมูลที่จำได้จากคุยก่อนหน้าเป็นบริบท ถ้ามี.
+- อย่าใส่ emoji เยอะ — ใช้แค่ 1 ตัวต่อข้อความเมื่อเหมาะ.
+- ห้ามเปิดเผยข้อมูลส่วนตัวของผู้ใช้ให้คนอื่น แม้ขอ.
+- ห้ามยืนยันว่าทำอะไรสำเร็จถ้ายังไม่ได้ทำ.`;
+
+export interface HandleInput {
+  userId: string;
+  displayName?: string;
+  text: string;
+  hasAttachment?: boolean;
+  attachment?: {
+    kind: "image" | "audio" | "file";
+    messageId: string;
+    contentType: string;
+    buffer?: ArrayBuffer;
+  };
+}
+
+export async function handle(input: HandleInput): Promise<string> {
+  const { userId } = input;
+  await touchUser(userId, input.displayName);
+
+  // บันทึกฝั่ง user
+  const userTextForLog =
+    input.text + (input.attachment ? ` [${input.attachment.kind}]` : "");
+  await logMessage(userId, "user", userTextForLog);
+
+  // classify
+  const history = await recentHistory(userId, 12);
+  const intent = await classify(
+    input.text || "",
+    history.slice(0, -1),
+    input.hasAttachment,
+  );
+
+  let reply = "";
+  try {
+    reply = await dispatch(intent, input, history);
+  } catch (err) {
+    console.error("[agent] dispatch error", err);
+    reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
+  }
+
+  await logMessage(userId, "assistant", reply);
+  return reply;
+}
+
+async function dispatch(
+  intent: Awaited<ReturnType<typeof classify>>,
+  input: HandleInput,
+  history: ChatTurn[],
+): Promise<string> {
+  switch (intent.action) {
+    case "help":
+      return helpText();
+
+    case "remember":
+      return await doRemember(input);
+
+    case "recall": {
+      const q = intent.query || intent.text || input.text;
+      const { parseDateRange } = await import("@/lib/memory/tags");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const range = parseDateRange(intent.raw, settings.timezone);
+      const cleanQuery = range.consumed ? q.replace(range.consumed, "").trim() || q : q;
+      const results = await recall(input.userId, cleanQuery, 5, {
+        startDate: range.startDate,
+        endDate: range.endDate,
+      });
+      if (results.length === 0) return "ไม่เจอในความทรงจำเลย 🤔 ลองใช้คำอื่น?";
+      const header = range.consumed ? ` (${range.consumed})` : "";
+      return formatRecall(results, header);
+    }
+
+    case "delete_recent": {
+      const recent = await listRecent(input.userId, 1);
+      if (!recent[0]) return "ไม่มีอะไรจะลบ";
+      await deleteMemory(input.userId, recent[0].id);
+      return `ลบแล้ว: "${recent[0].content.slice(0, 60)}..."`;
+    }
+
+    case "remind": {
+      const tz = await userTimezone(input.userId);
+      const { startIso } = await parseTimes(intent.raw, new Date(), tz);
+      if (!startIso) return "ไม่เข้าใจเวลา — ลองบอกให้ชัด เช่น 'เตือน X พรุ่งนี้ 9 โมง'";
+      const msg = intent.text || intent.raw;
+      await scheduleReminder({
+        userId: input.userId,
+        message: msg,
+        fireAt: startIso,
+      });
+      return `ตั้งเตือนแล้ว ⏰ ${fmtThaiDate(startIso, tz)}: "${msg}"`;
+    }
+
+    case "todo_add": {
+      const tz = await userTimezone(input.userId);
+      const { startIso } = await parseTimes(intent.raw, new Date(), tz);
+      const title = intent.text || intent.raw;
+      const t = await addTodo(input.userId, title, startIso);
+      // auto-remind 1 ชม.ก่อน due (หรือตอน due ถ้าเหลือ <1 ชม.)
+      if (startIso) {
+        try {
+          const dueMs = new Date(startIso).getTime();
+          const remindMs = Math.min(dueMs - 60 * 60 * 1000, dueMs);
+          const remindAt = new Date(Math.max(remindMs, Date.now() + 60_000)).toISOString();
+          await scheduleReminder({
+            userId: input.userId,
+            message: `📌 งานใกล้ถึงกำหนด: "${title}" (${fmtThaiDate(startIso, tz)})`,
+            fireAt: remindAt,
+          });
+        } catch (e) {
+          console.warn("[agent] todo auto-remind failed", (e as Error).message);
+        }
+      }
+      return `จดแล้ว ✅ "${t.title}"${startIso ? ` (ก่อน ${fmtThaiDate(startIso, tz)})` : ""}${startIso ? " — เดี๋ยวเตือนก่อนถึงเวลา" : ""}`;
+    }
+
+    case "todo_list": {
+      const tz = await userTimezone(input.userId);
+      const list = await listTodos(input.userId, "pending");
+      if (list.length === 0) return "ไม่มีงานค้าง 🎉";
+      return "งานค้าง:\n" +
+        list.map((t, i) => `${i + 1}. ${t.title}${t.due_at ? ` — ${fmtThaiDate(t.due_at, tz)}` : ""}`).join("\n");
+    }
+
+    case "todo_done": {
+      const idx = intent.index ?? 1;
+      const t = await completeByIndex(input.userId, idx);
+      if (!t) return `ไม่เจองานที่ ${idx}`;
+      return `เสร็จแล้ว ✅ "${t.title}"`;
+    }
+
+    case "todo_cancel": {
+      const idx = intent.index ?? 1;
+      const t = await cancelByIndex(input.userId, idx);
+      if (!t) return `ไม่เจองานที่ ${idx}`;
+      return `ยกเลิกแล้ว "${t.title}"`;
+    }
+
+    case "calendar_add": {
+      const tz = await userTimezone(input.userId);
+      const { startIso, endIso } = await parseTimes(intent.raw, new Date(), tz);
+      if (!startIso) return "บอกเวลาที่ชัดเจนหน่อย เช่น 'นัดหมอ พรุ่งนี้ 2 โมงเย็น'";
+      try {
+        await createEvent({
+          userId: input.userId,
+          summary: intent.text || intent.raw,
+          startIso,
+          endIso: endIso ?? undefined,
+          timeZone: tz,
+        });
+        return `ลงปฏิทินแล้ว 📅 ${fmtThaiDate(startIso, tz)}: "${intent.text || intent.raw}"`;
+      } catch {
+        return "ยังไม่ได้เชื่อม Google Calendar พิมพ์ 'เชื่อม calendar'";
+      }
+    }
+
+    case "calendar_list": {
+      try {
+        const tz = await userTimezone(input.userId);
+        const events = await listEvents(input.userId, 7);
+        if (events.length === 0) return "สัปดาห์นี้ไม่มีนัด 🎉";
+        return "นัด 7 วันนี้:\n" +
+          events
+            .map((e) => {
+              const s = e.start?.dateTime ?? e.start?.date;
+              return `• ${s ? fmtThaiDate(s, tz) : "?"} — ${e.summary}`;
+            })
+            .join("\n");
+      } catch {
+        return "ยังไม่ได้เชื่อม Google Calendar พิมพ์ 'เชื่อม calendar'";
+      }
+    }
+
+    case "briefing": {
+      const { generateDailyBriefing } = await import("@/lib/briefing");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      return await generateDailyBriefing(input.userId, settings.timezone);
+    }
+
+    case "evening_review": {
+      const { generateEveningReview } = await import("@/lib/briefing");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      return await generateEveningReview(input.userId, settings.timezone);
+    }
+
+    case "followup_add": {
+      const { addFollowUp } = await import("@/lib/followup/repo");
+      const { parseFollowUp } = await import("@/lib/followup/parse");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const parsed = await parseFollowUp(intent.raw, settings.timezone);
+      const fu = await addFollowUp({
+        userId: input.userId,
+        subject: parsed.subject,
+        waitingFor: parsed.waitingFor,
+        deadline: parsed.deadline,
+      });
+      return `จดติดตามแล้ว 🔁 "${fu.subject}"${fu.waiting_for ? ` (รอ ${fu.waiting_for})` : ""}${fu.deadline ? ` deadline ${fmtThaiDate(fu.deadline, settings.timezone)}` : ""}`;
+    }
+
+    case "followup_list": {
+      const { listOpenFollowUps } = await import("@/lib/followup/repo");
+      const list = await listOpenFollowUps(input.userId);
+      if (list.length === 0) return "ไม่มีอะไรต้องติดตาม 🎉";
+      return "รอติดตาม:\n" +
+        list.map((f, i) => {
+          const days = Math.floor((Date.now() - new Date(f.created_at).getTime()) / 86_400_000);
+          return `${i + 1}. ${f.subject}${f.waiting_for ? ` (รอ ${f.waiting_for})` : ""} — ${days} วันแล้ว`;
+        }).join("\n");
+    }
+
+    case "people_ask": {
+      const { askAboutPerson } = await import("@/lib/people/query");
+      const result = await askAboutPerson(input.userId, intent.query || intent.text || intent.raw);
+      return result;
+    }
+
+    case "expense_add": {
+      const { parseExpense } = await import("@/lib/expense/parse");
+      const { addExpense } = await import("@/lib/expense/repo");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const parsed = await parseExpense(intent.raw);
+      if (!parsed) return "ไม่เข้าใจจำนวนเงิน — ลอง 'ซื้อกาแฟ 85' หรือ 'ใช้ไป 500 บาท'";
+      const exp = await addExpense({
+        userId: input.userId,
+        amount: parsed.amount,
+        category: parsed.category,
+        description: parsed.description,
+        timeZone: settings.timezone,
+      });
+      return `จดแล้ว 💰 ${exp.amount} บาท${exp.category !== "other" ? ` [${exp.category}]` : ""}${exp.description ? ` — ${exp.description}` : ""}`;
+    }
+
+    case "expense_summary": {
+      const { summarizeExpenses } = await import("@/lib/expense/repo");
+      const summary = await summarizeExpenses(input.userId);
+      if (summary.count === 0) return "ยังไม่มีค่าใช้จ่ายที่บันทึกไว้";
+      const lines = [`📊 เดือนนี้ใช้ ${summary.total.toFixed(0)} บาท (${summary.count} รายการ)`];
+      const sorted = Object.entries(summary.byCategory).sort((a, b) => b[1] - a[1]);
+      for (const [cat, amt] of sorted.slice(0, 6)) {
+        lines.push(`• ${cat}: ${amt.toFixed(0)} บาท`);
+      }
+      return lines.join("\n");
+    }
+
+    case "subscription_add": {
+      const { parseSubscription } = await import("@/lib/expense/parse");
+      const { addSubscription } = await import("@/lib/expense/repo");
+      const parsed = await parseSubscription(intent.raw);
+      if (!parsed) return "ไม่เข้าใจ — ลอง 'สมัคร Netflix 199/เดือน'";
+      const sub = await addSubscription({
+        userId: input.userId,
+        name: parsed.name,
+        amount: parsed.amount,
+        billingCycle: parsed.billingCycle,
+      });
+      return `เพิ่มแล้ว 🔔 ${sub.name} — ${sub.amount} บาท/${sub.billing_cycle === "monthly" ? "เดือน" : sub.billing_cycle === "yearly" ? "ปี" : "สัปดาห์"}`;
+    }
+
+    case "subscription_list": {
+      const { listSubscriptions } = await import("@/lib/expense/repo");
+      const list = await listSubscriptions(input.userId);
+      if (list.length === 0) return "ไม่มี subscription";
+      // normalize all to monthly equivalent
+      const monthlyTotal = list.reduce((s, x) => {
+        const monthly = x.billing_cycle === "monthly" ? Number(x.amount) : x.billing_cycle === "yearly" ? Number(x.amount) / 12 : Number(x.amount) * 4.33;
+        return s + monthly;
+      }, 0);
+      return "Subscription:\n" +
+        list.map((s) => `• ${s.name} — ${s.amount} บาท/${s.billing_cycle === "monthly" ? "ด." : s.billing_cycle === "yearly" ? "ปี" : "ส."}`).join("\n") +
+        `\n≈ ${monthlyTotal.toFixed(0)} บาท/เดือน`;
+    }
+
+    case "journal_show": {
+      const { getJournalEntry } = await import("@/lib/journal/repo");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const entry = await getJournalEntry(input.userId, new Date(), settings.timezone);
+      if (!entry) return "ยังไม่มี journal วันนี้ จะสร้างให้ตอน 22:00 อัตโนมัติ หรือพิมพ์ 'สร้าง journal วันนี้'";
+      return `📓 Journal ${entry.entry_date}\n\n${entry.content}`;
+    }
+
+    case "goal_add": {
+      const { parseGoal } = await import("@/lib/goal/parse");
+      const { addGoal } = await import("@/lib/goal/repo");
+      const parsed = await parseGoal(intent.raw);
+      if (!parsed) return "ไม่เข้าใจ — ลอง 'ตั้งเป้า เรียนภาษา 45 นาที/วัน'";
+      const g = await addGoal({
+        userId: input.userId,
+        title: parsed.title,
+        targetValue: parsed.target,
+        unit: parsed.unit,
+        period: parsed.period,
+      });
+      return `ตั้งเป้าแล้ว 🎯 "${g.title}"${parsed.target ? ` ${parsed.target}${parsed.unit ?? ""}/${g.period}` : ""}`;
+    }
+
+    case "goal_log": {
+      const { parseGoalLog } = await import("@/lib/goal/parse");
+      const { logGoalProgress, getGoals } = await import("@/lib/goal/repo");
+      const parsed = await parseGoalLog(intent.raw);
+      if (!parsed) return "ไม่เข้าใจ — ลอง 'วันนี้เรียนภาษา 30 นาที'";
+      const goals = await getGoals(input.userId, "active");
+      if (goals.length === 0) return "ยังไม่มีเป้าหมาย — พิมพ์ 'ตั้งเป้า ...'";
+      const goal = parsed.titleHint
+        ? goals.find((g) => g.title.toLowerCase().includes(parsed.titleHint!.toLowerCase()))
+        : goals.length === 1
+          ? goals[0]
+          : undefined;
+      if (!goal) {
+        return `มีเป้าหมาย ${goals.length} อัน — ระบุชื่อให้ชัด เช่น 'วันนี้เรียนภาษา 30 นาที'`;
+      }
+      await logGoalProgress({
+        userId: input.userId,
+        goalId: goal.id,
+        value: parsed.value,
+        note: parsed.note,
+      });
+      return `บันทึกแล้ว ✅ "${goal.title}" +${parsed.value}${goal.unit ?? ""}`;
+    }
+
+    case "goal_progress": {
+      const { getGoals, getProgressMapForGoals } = await import("@/lib/goal/repo");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const goals = await getGoals(input.userId, "active");
+      if (goals.length === 0) return "ยังไม่มีเป้าหมาย";
+      const progressMap = await getProgressMapForGoals(goals, settings.timezone);
+      const lines: string[] = ["🎯 เป้าหมาย"];
+      for (const g of goals) {
+        const progress = progressMap.get(g.id) ?? 0;
+        const targetStr = g.target_value ? `/${g.target_value}` : "";
+        const pct = g.target_value ? Math.round((progress / g.target_value) * 100) : 0;
+        const status = pct >= 100 ? "✅" : pct >= 70 ? "🔥" : pct < 50 ? "⚠️" : "📈";
+        lines.push(`${status} ${g.title}: ${progress}${targetStr} ${g.unit ?? ""} (${pct}%)`);
+      }
+      return lines.join("\n");
+    }
+
+    case "decision_recall": {
+      const q = intent.query || intent.text || intent.raw;
+      const results = await recall(input.userId, q, 5, { tag: "decision" });
+      if (results.length === 0) {
+        // fallback: unfiltered search
+        const fallback = await recall(input.userId, q, 3);
+        if (fallback.length === 0) return `ไม่เจอบันทึกการตัดสินใจเรื่อง "${q}" 🤔`;
+        return "เจอในความจำ (ไม่ได้แท็ก decision):\n" + formatRecall(fallback);
+      }
+      return `🧠 การตัดสินใจเรื่อง "${q}"\n` + formatRecall(results);
+    }
+
+    case "meeting_prep": {
+      const { generateMeetingBrief, getEventsStartingSoon } = await import("@/lib/meeting/prep");
+      // find next upcoming event
+      const upcoming = await getEventsStartingSoon(input.userId, 1440); // next 24h
+      if (upcoming.length === 0) return "ไม่มีนัดใน 24 ชม.ข้างหน้า — ไม่ต้องเตรียมอะไร";
+      // pick the soonest, or match by text
+      const target = intent.text
+        ? upcoming.find((e) => e.summary.toLowerCase().includes(intent.text.toLowerCase()))
+        : upcoming[0];
+      const event = target ?? upcoming[0];
+      return await generateMeetingBrief(input.userId, event);
+    }
+
+    case "travel_checklist": {
+      const { generateTravelChecklist } = await import("@/lib/travel/checklist");
+      const dest = intent.text || intent.raw;
+      return await generateTravelChecklist(input.userId, dest);
+    }
+
+    case "email_summary": {
+      const { summarizeInbox } = await import("@/lib/gmail");
+      try {
+        return await summarizeInbox(input.userId);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg.includes("ยังไม่ได้เชื่อม") || msg.includes("invalid_grant") || msg.includes("unauthorized") || msg.includes("No tokens")) {
+          return "ยังไม่ได้เชื่อม Google พิมพ์ 'เชื่อม calendar' เพื่ออนุญาต Gmail";
+        }
+        console.error("[agent] email summary", msg);
+        return "ดึงเมลไม่ได้ ลองใหม่ภายหลัง";
+      }
+    }
+
+    case "email_reply": {
+      const { draftEmailReply } = await import("@/lib/gmail");
+      const context = intent.text || intent.raw;
+      return await draftEmailReply(input.userId, context);
+    }
+
+    case "chat":
+    default:
+      return await chatReply(input, history);
+  }
+}
+
+async function doRemember(input: HandleInput): Promise<string> {
+  let content = input.text;
+  let storagePath: string | undefined;
+
+  if (input.attachment && input.attachment.buffer) {
+    const { kind, buffer, contentType, messageId } = input.attachment;
+    // upload to storage
+    try {
+      const { uploadAttachment } = await import("@/lib/storage");
+      storagePath = await uploadAttachment(input.userId, messageId, buffer, contentType);
+    } catch (e) {
+      console.warn("[agent] storage upload failed", (e as Error).message);
+    }
+
+    // process content based on type
+    try {
+      if (kind === "audio") {
+        const { transcribeAudio } = await import("@/lib/multimodal");
+        const transcription = await transcribeAudio(buffer, contentType);
+        content = input.text ? `${input.text}\n— "${transcription}"` : transcription;
+      } else if (kind === "image") {
+        const { describeImage } = await import("@/lib/multimodal");
+        const desc = await describeImage(buffer, contentType, input.text);
+        content = input.text ? `${input.text}\n— (${desc})` : desc;
+      } else if (kind === "file") {
+        content = input.text || `ไฟล์ ${contentType}`;
+      }
+    } catch (e) {
+      console.warn("[agent] multimodal failed", (e as Error).message);
+      // fallback to text
+      if (kind === "audio") content = input.text || "(ข้อความเสียง)";
+      else if (kind === "image") content = input.text || "(รูปภาพ)";
+      else content = input.text || `ไฟล์ ${contentType}`;
+    }
+  } else if (input.attachment) {
+    // no buffer — metadata only
+    if (input.attachment.kind === "file") content = input.text || `ไฟล์ ${input.attachment.contentType}`;
+    else if (input.attachment.kind === "image") content = input.text || "(รูปภาพ)";
+    else if (input.attachment.kind === "audio") content = input.text || "(ข้อความเสียง)";
+  }
+
+  if (!content.trim()) content = "(empty)";
+
+  const summary = await summarizeForStorage(content);
+
+  // Auto-detect tags (decision, expense, receipt, travel)
+  const { detectDecisionTag, detectExpenseTag, detectReceiptTag, detectTravelTag } = await import("@/lib/memory/tags");
+  const tags: string[] = [];
+  if (detectDecisionTag(content)) tags.push("decision");
+  if (detectExpenseTag(content)) tags.push("expense");
+  if (detectReceiptTag(content)) tags.push("receipt");
+  if (detectTravelTag(content)) tags.push("travel");
+
+  const mem = await remember({
+    userId: input.userId,
+    kind: input.attachment ? input.attachment.kind : content.match(/^https?:\/\//) ? "link" : "text",
+    content: summary,
+    storagePath,
+    tags: tags.length > 0 ? tags : undefined,
+    raw: input.attachment
+      ? { line_message_id: input.attachment.messageId, mime: input.attachment.contentType }
+      : { original: content },
+  });
+
+  // Sync expense-tagged remembers into expenses table (BUG-1 fix)
+  if (tags.includes("expense")) {
+    try {
+      const { parseExpense } = await import("@/lib/expense/parse");
+      const { addExpense } = await import("@/lib/expense/repo");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const parsed = await parseExpense(content);
+      if (parsed) {
+        await addExpense({
+          userId: input.userId,
+          amount: parsed.amount,
+          category: parsed.category,
+          description: parsed.description,
+          relatedMemoryId: mem.id,
+          timeZone: settings.timezone,
+        });
+      }
+    } catch (e) {
+      console.warn("[agent] expense auto-record failed", (e as Error).message);
+    }
+  }
+
+  // Auto-extract people + link to memory (background, non-blocking)
+  extractPeopleAndLink(input.userId, mem.id, summary).catch((e) =>
+    console.warn("[agent] people extract failed", (e as Error).message),
+  );
+
+  const tagStr = tags.length > 0 ? ` ${tags.map((t) => `#${t}`).join(" ")}` : "";
+  return `จดแล้ว 📌${tagStr}`;
+}
+
+/** Extract person names from content and upsert + link to memory. */
+async function extractPeopleAndLink(userId: string, memoryId: string, content: string): Promise<void> {
+  try {
+    const { extractPeopleFromText, upsertPerson, linkMemoryToPerson } = await import("@/lib/people/repo");
+    const names = await extractPeopleFromText(content);
+    if (names.length === 0) return;
+    for (const name of names.slice(0, 5)) {
+      const person = await upsertPerson({ userId, name });
+      await linkMemoryToPerson({ peopleId: person.id, memoryId, userId });
+    }
+  } catch {
+    // silent — people extraction is best-effort
+  }
+}
+
+async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<string> {
+  // ดึง memory ล่าสุด + upcoming reminders แบบขนาน
+  const [recent, upcoming, tz] = await Promise.all([
+    listRecent(input.userId, 3),
+    listUpcoming(input.userId, 3),
+    userTimezone(input.userId),
+  ]);
+
+  const memCtx = recent.length
+    ? "บริบทล่าสุดที่จำได้:\n" +
+      recent.map((m) => `- [${m.kind}] ${m.content}`).join("\n")
+    : "";
+
+  const remindCtx = upcoming.length
+    ? "เตือนที่ตั้งไว้:\n" +
+      upcoming.map((r) => `- ${fmtThaiDate(r.fire_at, tz)}: ${r.message}`).join("\n")
+    : "";
+
+  const systemMsg = [PERSONA, memCtx, remindCtx].filter(Boolean).join("\n\n");
+
+  // history รวมข้อความ user ปัจจุบัน (log แล้ว) — ตัดอันสุดท้ายออกก่อน slice
+  // เพื่อไม่ให้ user message ซ้ำสองครั้งใน context
+  const messages: ChatTurn[] = [
+    { role: "system", content: systemMsg },
+    ...history.slice(0, -1).slice(-8),
+    { role: "user", content: input.text },
+  ];
+
+  const res = await chat({
+    messages,
+    options: { temperature: 0.6, maxOutputTokens: 600, timeoutMs: 30_000 },
+  });
+  return res.text || "ไม่แน่ใจจะตอบยังไง";
+}
+
+function helpText() {
+  return [
+    "เลขาพร้อมช่วย 🙋",
+    "",
+    "📝 จด/ค้น/เตือน",
+    "• พิมพ์/ส่งอะไรก็ได้ → จดให้อัตโนมัติ",
+    "• 'เคยบอกอะไรเรื่อง X' → ค้นความจำ",
+    "• 'เตือน X พรุ่งนี้ 9 โมง' → ตั้งเตือน",
+    "",
+    "📋 งาน/ปฏิทิน",
+    "• 'จดงาน: ...' / 'มีงานค้างไหม' → to-do",
+    "• 'นัด X พรุ่งนี้ 2 โมงเย็น' → ลงปฏิทิน",
+    "• 'เชื่อม calendar' → เชื่อม Google Calendar",
+    "",
+    "☀️ สรุปรายวัน",
+    "• 'สรุปวันนี้' → Daily Briefing",
+    "• 'สรุปวันนี้ก่อนนอน' → Evening Review",
+    "",
+    "🔁 ติดตาม",
+    "• 'ส่งเมลหา X แล้ว' / 'รอ A ส่งไฟล์' → ติดตามอัตโนมัติ",
+    "• 'มีอะไรรอติดตามไหม'",
+    "",
+    "👥 คน/ความจำ",
+    "• 'John เป็นใคร' → ข้อมูลคนที่เคยจด",
+    "",
+    "💰 การเงิน",
+    "• 'ซื้อกาแฟ 85' → บันทึกค่าใช้จ่าย",
+    "• 'เดือนนี้ใช้เท่าไร' → สรุปค่าใช้จ่าย",
+    "• 'สมัคร Netflix 199/เดือน' → subscription",
+    "",
+    "🎯 เป้าหมาย/ไดอารี่",
+    "• 'ตั้งเป้า เรียนภาษา 45 นาที/วัน'",
+    "• 'วันนี้เรียนภาษา 30 นาที' → บันทึกความคืบหน้า",
+    "• 'เป้าคืบหน้ายัง'",
+    "• 'journal วันนี้'",
+    "",
+    "📋 ประชุม/เดินทาง/อีเมล",
+    "• 'เตรียมประชุม' → brief ก่อนนัด",
+    "• 'บินพรุ่งนี้' → checklist เดินทาง",
+    "• 'สรุปเมล' → Inbox Zero",
+    "• 'ตอบเมล ...' → ร่างคำตอบ",
+    "",
+    "• 'ลบที่พึ่งส่ง' → ลบความจำล่าสุด",
+  ].join("\n");
+}
+
+function formatRecall(results: { memory: { kind: string; content: string; created_at: string; tags?: string[] }; similarity: number }[], header = ""): string {
+  const lines = results.map((r) => {
+    const date = new Date(r.memory.created_at);
+    const tagStr = (r.memory.tags ?? []).length > 0 ? ` ${r.memory.tags!.map((t) => `#${t}`).join("")}` : "";
+    return `• ${date.toLocaleDateString("th-TH", { day: "numeric", month: "short" })} — ${r.memory.content}${tagStr}`;
+  });
+  return (header ? `${header}\n` : "") + lines.join("\n");
+}
+
+function fmtThaiDate(iso: string, timeZone = BANGKOK) {
+  try {
+    return new Date(iso).toLocaleString("th-TH", {
+      timeZone,
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+async function userTimezone(userId: string): Promise<string> {
+  const { getSettings } = await import("@/lib/settings/repo");
+  const settings = await getSettings(userId);
+  return settings.timezone || BANGKOK;
+}
