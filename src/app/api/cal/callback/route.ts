@@ -21,7 +21,8 @@ export async function GET(req: Request) {
     return new Response("missing code or state", { status: 400 });
   }
 
-  const userId = await verifyOAuthState(state);
+  const parsed = await verifyOAuthState(state);
+  const userId = parsed?.userId;
   if (!userId || !/^U[0-9a-f]{32}$/i.test(userId)) {
     return new Response("invalid state", { status: 400 });
   }
@@ -32,11 +33,17 @@ export async function GET(req: Request) {
   try {
     const tokens = await exchangeCode(code);
     await saveTokens(userId, tokens);
+    if (parsed.source === "liff") {
+      return Response.redirect(`${env.APP_BASE_URL.replace(/\/$/, "")}/liff?google=connected`, 302);
+    }
     return new Response("เชื่อม Google Calendar สำเร็จ ✅ ปิดหน้านี้ได้เลย", {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   } catch (e) {
     console.error("[cal/callback]", e);
+    if (parsed.source === "liff") {
+      return Response.redirect(`${env.APP_BASE_URL.replace(/\/$/, "")}/liff?google=error`, 302);
+    }
     return new Response("เชื่อมไม่สำเร็จ ลองใหม่อีกครั้ง", { status: 500 });
   }
 }

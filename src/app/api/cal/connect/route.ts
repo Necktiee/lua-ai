@@ -14,7 +14,8 @@ export async function GET(req: Request) {
   const signedState = url.searchParams.get("state");
   if (!signedState) return new Response("missing state", { status: 400 });
 
-  const userId = await verifyOAuthState(signedState);
+  const parsed = await verifyOAuthState(signedState);
+  const userId = parsed?.userId;
   if (!userId || !/^U[0-9a-f]{32}$/i.test(userId)) {
     return new Response("invalid state", { status: 400 });
   }

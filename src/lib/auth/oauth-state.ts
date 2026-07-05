@@ -29,27 +29,34 @@ async function hmac(data: string): Promise<string> {
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-function encodePayload(userId: string): string {
+/** source บอกว่า flow เริ่มจากไหน — ใช้ตัดสินว่า callback ควร redirect กลับ /liff หรือโชว์ plain text (chat) */
+export type OAuthStateSource = "chat" | "liff";
+
+function encodePayload(userId: string, source: OAuthStateSource): string {
   const exp = Date.now() + STATE_TTL_MS;
-  return `${userId}|${exp}`;
+  return `${userId}|${exp}|${source}`;
 }
 
-function decodePayload(raw: string): { userId: string; exp: number } | null {
-  const pipe = raw.lastIndexOf("|");
-  if (pipe < 1) return null;
-  const userId = raw.slice(0, pipe);
-  const exp = Number(raw.slice(pipe + 1));
+function decodePayload(raw: string): { userId: string; exp: number; source: OAuthStateSource } | null {
+  const parts = raw.split("|");
+  if (parts.length < 2) return null;
+  const userId = parts[0];
+  const exp = Number(parts[1]);
+  // state เก่า (ก่อนมี source) จะมีแค่ 2 ส่วน — ถือว่ามาจาก chat
+  const source: OAuthStateSource = parts[2] === "liff" ? "liff" : "chat";
   if (!userId || !Number.isFinite(exp)) return null;
-  return { userId, exp };
+  return { userId, exp, source };
 }
 
-export async function signOAuthState(userId: string): Promise<string> {
-  const payload = encodePayload(userId);
+export async function signOAuthState(userId: string, source: OAuthStateSource = "chat"): Promise<string> {
+  const payload = encodePayload(userId, source);
   const sig = await hmac(payload);
   return `${btoa(payload).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}.${sig}`;
 }
 
-export async function verifyOAuthState(state: string): Promise<string | null> {
+export async function verifyOAuthState(
+  state: string,
+): Promise<{ userId: string; source: OAuthStateSource } | null> {
   const dot = state.lastIndexOf(".");
   if (dot < 1) return null;
   const payloadB64 = state.slice(0, dot);
@@ -64,7 +71,7 @@ export async function verifyOAuthState(state: string): Promise<string | null> {
   if (!timingSafeEqual(sig, expected)) return null;
   const parsed = decodePayload(raw);
   if (!parsed || parsed.exp < Date.now()) return null;
-  return parsed.userId;
+  return { userId: parsed.userId, source: parsed.source };
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
