@@ -15,6 +15,7 @@ import {
   GoogleLogo,
   Gear,
   ChartBar,
+  ClipboardText,
 } from "@phosphor-icons/react";
 
 interface Profile {
@@ -102,6 +103,12 @@ interface FollowUp {
 interface Msg {
   id: string;
   role: string;
+  content: string;
+  created_at: string;
+}
+
+interface Meeting {
+  id: string;
   content: string;
   created_at: string;
 }
@@ -194,12 +201,13 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [usage, setUsage] = useState<UsageData | null>(null);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [newTodo, setNewTodo] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes] = await Promise.all([
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes] = await Promise.all([
       fetch("/api/dashboard/status").then((r) => r.json()),
       fetch("/api/dashboard/todos?filter=pending").then((r) => r.json()),
       fetch("/api/dashboard/calendar?days=7").then((r) => r.json()),
@@ -209,6 +217,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       fetch("/api/dashboard/followups").then((r) => r.json()),
       fetch("/api/dashboard/messages?limit=20").then((r) => r.json()),
       fetch("/api/dashboard/usage").then((r) => r.json()),
+      fetch("/api/dashboard/meetings").then((r) => r.json()),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -221,7 +230,8 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setJournal(journalRes.entries ?? []);
     setFollowUps(fuRes.followUps ?? []);
     setMessages(msgRes.messages ?? []);
-    setUsage(usageRes ?? null);
+    setUsage(usageRes);
+    setMeetings(meetingsRes.meetings ?? []);
     setLoaded(true);
   }, []);
 
@@ -492,6 +502,24 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   <p className="text-zinc-700 dark:text-zinc-300">{f.subject}</p>
                   {f.waiting_for && <p className="text-xs text-zinc-400">รอ: {f.waiting_for}</p>}
                 </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card
+        title={`สรุปประชุมล่าสุด (${meetings.length})`}
+        icon={<ClipboardText weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
+        {meetings.length === 0 ? (
+          <p className="text-sm text-zinc-400">ยังไม่มีบันทึกประชุม — ส่งสรุปประชุมมาได้เลย โฮชิจะจดแท็ก #meeting ให้อัตโนมัติ</p>
+        ) : (
+          <ul className="space-y-3">
+            {meetings.map((m) => (
+              <li key={m.id} className="text-sm">
+                <p className="text-xs text-zinc-400 mb-0.5">{fmtDate(m.created_at)}</p>
+                <p className="text-zinc-700 dark:text-zinc-300 line-clamp-3 whitespace-pre-line">{m.content}</p>
               </li>
             ))}
           </ul>

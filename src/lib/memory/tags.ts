@@ -123,6 +123,22 @@ export function detectTravelTag(text: string): boolean {
 }
 
 /**
+ * Detect meeting notes / meeting summary.
+ * Triggers when text reads like a meeting writeup: starts with or contains
+ * "สรุปประชุม", "บันทึกการประชุม", "สรุปการประชุม", "meeting notes", "meeting:",
+ * " MoM:", "minutes of meeting", or any line that begins with those markers.
+ * NOTE: ไม่ใช้ \b ใน Thai pattern เพราะ JS regex นับ Thai char เป็น non-word.
+ */
+export function detectMeetingTag(text: string): boolean {
+  const patterns = [
+    /(?:^|\n)\s*(สรุปประชุม|สรุปการประชุม|บันทึกการประชุม|บันทึกประชุม|ประชุมเรื่อง|ที่ประชุม|วาระการประชุม|MoM|MOM)(?:\s|:|：|$)/i,
+    /\b(meeting notes|meeting minutes|minutes of meeting|meeting[:\s])/i,
+    /(ผู้เข้าประชุม|ที่ประชุม|วาระที่|มติที่ประชุม|action items?|items? ที่ต้องทำ)/i,
+  ];
+  return patterns.some((re) => re.test(text));
+}
+
+/**
  * Detect if text explicitly names a project (Gap #5 lightweight fix — no new
  * "projects" table, just a structured `project:<name>` tag reusing the existing
  * flexible `tags` array so memory/todos can later be filtered by project via

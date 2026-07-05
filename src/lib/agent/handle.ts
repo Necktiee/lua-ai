@@ -482,6 +482,17 @@ async function dispatch(
       return await generateMeetingBrief(input.userId, event);
     }
 
+    case "meeting_list": {
+      // List recent meeting notes (tag=meeting). If user gave a topic query,
+      // narrow by semantic search within meeting-tagged memories.
+      const q = intent.query || intent.text || "ประชุม meeting";
+      const results = await recall(input.userId, q, 10, { tag: "meeting" });
+      if (results.length === 0) {
+        return "ยังไม่มีบันทึกการประชุมเลย 📋\nส่งสรุปประชุม/บันทึกการประชุมมาได้เลย โฮชิจะจดแท็ก #meeting ให้อัตโนมัติ";
+      }
+      return `📋 สรุปประชุมล่าสุด (${results.length})\n` + formatRecall(results);
+    }
+
     case "travel_checklist": {
       const { generateTravelChecklist } = await import("@/lib/travel/checklist");
       const dest = intent.text || intent.raw;
@@ -606,13 +617,14 @@ async function doRemember(input: HandleInput): Promise<string> {
 
   const summary = await summarizeForStorage(content);
 
-  // Auto-detect tags (decision, expense, receipt, travel, project)
-  const { detectDecisionTag, detectExpenseTag, detectReceiptTag, detectTravelTag, detectProjectTag, extractProjectName } = await import("@/lib/memory/tags");
+  // Auto-detect tags (decision, expense, receipt, travel, project, meeting)
+  const { detectDecisionTag, detectExpenseTag, detectReceiptTag, detectTravelTag, detectMeetingTag, detectProjectTag, extractProjectName } = await import("@/lib/memory/tags");
   const tags: string[] = [];
   if (detectDecisionTag(content)) tags.push("decision");
   if (detectExpenseTag(content)) tags.push("expense");
   if (detectReceiptTag(content)) tags.push("receipt");
   if (detectTravelTag(content)) tags.push("travel");
+  if (detectMeetingTag(content)) tags.push("meeting");
   const projectName = detectProjectTag(content) ? extractProjectName(content) : undefined;
   if (projectName) tags.push("project", `project:${projectName}`);
 
@@ -759,6 +771,8 @@ const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
   {
     title: "📋 ประชุม/เดินทาง/อีเมล",
     lines: [
+      "'สรุปประชุม...' → จดแท็ก #meeting อัตโนมัติ",
+      "'ประชุมล่าสุดเรื่องอะไร' → ดึงบันทึกประชุม",
       "'เตรียมประชุม' → brief ก่อนนัด",
       "'บินพรุ่งนี้' → checklist เดินทาง",
       "'สรุปเมล' → Inbox Zero",
