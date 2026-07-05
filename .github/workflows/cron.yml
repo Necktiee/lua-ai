@@ -1,0 +1,54 @@
+name: Proactive cron ticks
+
+# Drives the 5 recurring cron routes that make the LINE secretary proactive
+# (poll fallback for reminders, per-user briefing/evening/journal/nudge, meeting prep).
+# Vercel Hobby plan's native Cron only supports once/day, which is useless for
+# per-minute/per-10-min scheduling — GitHub Actions cron fills that gap for free.
+#
+# NOTE: GitHub Actions scheduled workflows are best-effort and can be delayed
+# several minutes under load; this is tolerated by the app's dedup logic
+# (src/lib/cron/dedup.ts — one push per user/kind/day) and the widened
+# match windows in src/lib/settings/repo.ts (10-min window) and
+# src/app/api/cron/meeting/route.ts (15-35min window).
+
+on:
+  schedule:
+    # Single 5-min tick drives all 5 routes. Using one cron entry (not two)
+    # avoids GitHub Actions firing duplicate job runs at overlapping marks —
+    # each entry in `schedule:` triggers its own full job run independently.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll reminders (every 5 min)
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/poll" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "poll: %{http_code}\n"
+
+      - name: Daily briefing
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/briefing" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "briefing: %{http_code}\n"
+
+      - name: Evening review
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/evening" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "evening: %{http_code}\n"
+
+      - name: Daily journal + follow-up nudge
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/daily" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "daily: %{http_code}\n"
+
+      - name: Meeting prep
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/meeting" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "meeting: %{http_code}\n"
