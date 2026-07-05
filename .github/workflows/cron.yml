@@ -58,3 +58,9 @@ jobs:
           curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/weekly" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -o /dev/null -w "weekly: %{http_code}\n"
+
+      - name: Urgent email check (every 5 min, bounded 15-min window)
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/email" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "email: %{http_code}\n"

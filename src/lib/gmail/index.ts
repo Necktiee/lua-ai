@@ -194,6 +194,118 @@ export async function summarizeInbox(userId: string): Promise<string> {
   return lines.join("\n");
 }
 
+/** Fetch unread emails newer than `sinceMinutesAgo` minutes (bounded window for frequent cron polling). */
+export async function fetchRecentUnreadEmails(userId: string, sinceMinutesAgo: number, maxResults = 20): Promise<RawMessage[]> {
+  const client = await getAuthedClient(userId);
+  const gmail = google.gmail({ version: "v1", auth: client });
+
+  const sinceEpoch = Math.floor(Date.now() / 1000 - sinceMinutesAgo * 60);
+  const { data: list } = await gmail.users.messages.list({
+    userId: "me",
+    q: `is:unread after:${sinceEpoch}`,
+    maxResults,
+  });
+  if (!list.messages || list.messages.length === 0) return [];
+
+  const messages: RawMessage[] = [];
+  for (const m of list.messages) {
+    const { data: msg } = await gmail.users.messages.get({ userId: "me", id: m.id!, format: "full" });
+    messages.push(msg as unknown as RawMessage);
+  }
+  return messages;
+}
+
+async function alreadyNotifiedEmail(userId: string, gmailMessageId: string): Promise<boolean> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("email_notified")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("gmail_message_id", gmailMessageId)
+    .maybeSingle();
+  if (error) console.warn("[gmail] notified check", error.message);
+  return !!data;
+}
+
+async function markEmailNotified(userId: string, gmailMessageId: string): Promise<void> {
+  const db = requireDb();
+  const { error } = await db.from("email_notified").insert({ user_id: userId, gmail_message_id: gmailMessageId });
+  if (error && error.code !== "23505") console.warn("[gmail] notified mark", error.message);
+}
+
+export interface UrgentEmailResult {
+  urgent: Array<{ id: string; from: string; subject: string; snippet: string; body: string }>;
+  authError?: "not_connected" | "expired";
+}
+
+/**
+ * Proactive urgent-email check for cron use — bounded time window (avoids full 24h rescans),
+ * classifies unread mail via LLM, filters out already-notified messages, returns only new urgent ones.
+ */
+export async function checkUrgentEmails(userId: string, sinceMinutesAgo = 15): Promise<UrgentEmailResult> {
+  const db = requireDb();
+  const { data: tok } = await db.from("google_tokens").select("scope").eq("user_id", userId).maybeSingle();
+  const scope = tok?.scope ?? "";
+  if (!scope.includes("gmail.readonly")) return { urgent: [] };
+
+  let messages: RawMessage[];
+  try {
+    messages = await fetchRecentUnreadEmails(userId, sinceMinutesAgo, 20);
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg.includes("invalid_grant") || msg.includes("unauthorized") || msg.includes("invalid_token") || /token.*(expired|revoked)/i.test(msg)) {
+      return { urgent: [], authError: "expired" };
+    }
+    if (msg.includes("ยังไม่ได้เชื่อม")) return { urgent: [], authError: "not_connected" };
+    throw e;
+  }
+  if (messages.length === 0) return { urgent: [] };
+
+  // Skip messages already notified before spending an LLM call on them.
+  const fresh: RawMessage[] = [];
+  for (const m of messages) {
+    if (!(await alreadyNotifiedEmail(userId, m.id))) fresh.push(m);
+  }
+  if (fresh.length === 0) return { urgent: [] };
+
+  const parsed = fresh.map((m) => ({
+    id: m.id,
+    from: getHeader(m, "From"),
+    subject: getHeader(m, "Subject"),
+    body: getBody(m),
+    snippet: m.snippet ?? "",
+  }));
+
+  const res = await chat({
+    messages: [
+      {
+        role: "system",
+        content: `จำแนกว่าอีเมลแต่ละฉบับ "ด่วน/สำคัญต้องรีบตอบ" หรือไม่ ส่งกลับ JSON เท่านั้น:
+{"urgentIds": ["id1", "id2"]}
+เกณฑ์ด่วน: deadline ใกล้, ขอคำตอบ/อนุมัติ, ปัญหาเร่งด่วน, คนสำคัญทวงถาม. ไม่ใช่ newsletter/โปรโมชั่น/สแปม/จดหมายทั่วไป.`,
+      },
+      { role: "user", content: JSON.stringify(parsed.map((p) => ({ id: p.id, from: p.from, subject: p.subject, snippet: p.snippet }))) },
+    ],
+    options: { temperature: 0.1, maxOutputTokens: 300, lite: true },
+  });
+
+  let urgentIds: string[] = [];
+  try {
+    const cleaned = res.text.replace(/```json|```/g, "").trim();
+    const j = JSON.parse(cleaned);
+    urgentIds = Array.isArray(j.urgentIds) ? j.urgentIds : [];
+  } catch {
+    urgentIds = [];
+  }
+
+  const urgent = parsed.filter((p) => urgentIds.includes(p.id));
+  // Mark ALL fresh messages as notified (not just urgent) so non-urgent ones aren't reclassified every tick.
+  for (const m of fresh) {
+    await markEmailNotified(userId, m.id);
+  }
+  return { urgent };
+}
+
 /** Draft a reply for a given email context. */
 export async function draftEmailReply(userId: string, context: string): Promise<string> {
   const db = requireDb();
