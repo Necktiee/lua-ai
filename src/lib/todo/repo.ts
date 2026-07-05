@@ -8,6 +8,7 @@ export async function addTodo(
   userId: string,
   title: string,
   dueAt?: string | null,
+  priority: 1 | 2 | 3 = 2,
 ): Promise<TodoRecord> {
   const db = requireDb();
   await touchUser(userId);
@@ -18,6 +19,7 @@ export async function addTodo(
       title,
       due_at: dueAt ?? null,
       status: "pending",
+      priority,
     })
     .select()
     .single();
@@ -33,9 +35,28 @@ export async function listTodos(
   let q = db.from("todos").select("*").eq("user_id", userId);
   if (filter === "pending") q = q.eq("status", "pending");
   else if (filter === "done") q = q.eq("status", "done");
-  const { data, error } = await q.order("due_at", { ascending: true, nullsFirst: false });
+  const { data, error } = await q
+    .order("priority", { ascending: true })
+    .order("due_at", { ascending: true, nullsFirst: false });
   if (error) console.warn("[todo] listTodos", error.message);
   return (data ?? []) as TodoRecord[];
+}
+
+export async function setPriority(
+  userId: string,
+  id: string,
+  priority: 1 | 2 | 3,
+): Promise<TodoRecord | null> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("todos")
+    .update({ priority })
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) console.warn("[todo] setPriority", error.message);
+  return data as TodoRecord | null;
 }
 
 /** index = 1-based, อ้างตาม list pending order */
@@ -70,6 +91,7 @@ async function getByIndex(
     .select("*")
     .eq("user_id", userId)
     .eq("status", "pending")
+    .order("priority", { ascending: true })
     .order("due_at", { ascending: true, nullsFirst: false })
     .range(index - 1, index - 1)
     .maybeSingle();

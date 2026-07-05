@@ -74,6 +74,9 @@ const EnvSchema = z.object({
   // OpenWeatherMap (optional — for daily briefing weather)
   OPENWEATHER_API_KEY: z.string().optional(),
   WEATHER_LOCATION: z.string().default("Bangkok,TH"),
+
+  // Tavily web search (optional — goal.search)
+  TAVILY_API_KEY: z.string().optional(),
 });
 
 function load(): Env {
@@ -142,6 +145,7 @@ const fallbackDefaults: Env = {
   UPSTASH_REDIS_REST_TOKEN: undefined,
   OPENWEATHER_API_KEY: undefined,
   WEATHER_LOCATION: "Bangkok,TH",
+  TAVILY_API_KEY: undefined,
 };
 
 export const env = load();
@@ -159,4 +163,7 @@ export function hasQStash() {
 }
 export function hasGoogleCalendar() {
   return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+}
+export function hasWebSearch() {
+  return Boolean(env.TAVILY_API_KEY);
 }

@@ -96,6 +96,33 @@ export async function getAuthedClient(userId: string) {
   return c;
 }
 
+/** หา event ที่เวลาทับกับช่วง [startIso, endIso) — ใช้เตือนก่อนลงนัดซ้อน (goal.calendar). */
+export async function findConflicts(userId: string, startIso: string, endIso?: string) {
+  const auth = await getAuthedClient(userId);
+  const calendar = google.calendar({ version: "v3", auth });
+  const end = endIso ?? addOneHour(startIso);
+  const res = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: startIso,
+    timeMax: end,
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+  const items = res.data.items ?? [];
+  // timeMin/timeMax ของ Google กรองแบบ overlap อยู่แล้ว แต่ event ที่ start ตรงกับ
+  // timeMax เป๊ะ (จบพอดีตอนเริ่มนัดใหม่) ไม่ควรนับว่าชน — กรองซ้ำให้ชัวร์
+  const startMs = new Date(startIso).getTime();
+  const endMs = new Date(end).getTime();
+  return items.filter((e) => {
+    const s = e.start?.dateTime ?? e.start?.date;
+    const en = e.end?.dateTime ?? e.end?.date;
+    if (!s) return false;
+    const sMs = new Date(s).getTime();
+    const enMs = en ? new Date(en).getTime() : sMs;
+    return sMs < endMs && enMs > startMs;
+  });
+}
+
 export async function createEvent(args: {
   userId: string;
   summary: string;

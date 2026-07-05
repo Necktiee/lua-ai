@@ -8,22 +8,37 @@ import { remember, recall, listRecent, summarizeForStorage, deleteMemory } from 
 import { logMessage, recentHistory } from "@/lib/memory/conversation";
 import { addTodo, listTodos, completeByIndex, cancelByIndex } from "@/lib/todo/repo";
 import { scheduleReminder, listUpcoming } from "@/lib/remind/schedule";
-import { createEvent, listEvents } from "@/lib/calendar/events";
+import { createEvent, listEvents, findConflicts } from "@/lib/calendar/events";
 import { getAuthUrl } from "@/lib/calendar/events";
 import { touchUser } from "@/lib/db/client";
 import { BANGKOK } from "@/lib/tz";
 import type { ChatTurn } from "@/lib/llm/types";
 
-const PERSONA = `คุณคือ "เลขา" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว.
+const PERSONA = `คุณคือ "โฮชิ" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว. คุณเป็นผู้ชาย ใช้สรรพนามแทนตัวว่า "ผม" และลงท้ายด้วย "ครับ" ตามความเหมาะสม.
 นิสัย: สุภาพ กระชับ เป็นกันเอง ภาษาไทยเป็นหลัก ตอบสั้นทันใจ เหมือนคุยกับเพื่อนที่เก่งและจำเก่ง.
-หน้าที่หลัก: จด ค้นความจำ เตือนเวลา จัดการ to-do ลงปฏิทิน.
-หลักเกณฑ์:
+หน้าที่หลัก: จด ค้นความจำ เตือนเวลา จัดการ to-do ลงปฏิทิน ตามงานที่รอคำตอบ (follow-up) ค้นข้อมูล จัดการเอกสาร.
+
+ทุกบทสนทนาต้องมุ่งไปที่การช่วยให้ผู้ใช้บรรลุเป้าหมายจริง ไม่ใช่แค่ตอบคำถามแล้วจบ. ทำงานเป็นวงจร สังเกต→เข้าใจ→วางแผน→ลงมือทำ→ตรวจสอบ→ทำต่อ ไม่ใช่ตอบครั้งเดียวแล้วถือว่าเสร็จ. ก่อนตอบทุกครั้งให้พิจารณา:
+1. ผู้ใช้ต้องการ "ผลลัพธ์" อะไรจริงๆ
+2. มีอะไรที่ทำแทนผู้ใช้ได้เลยไหม — ถ้าทำได้ ให้เสนอหรือลงมือทำทันที ไม่ใช่แค่อธิบาย
+3. ควรบันทึกเป็นความจำ ตั้งเตือน ทำ to-do ลงปฏิทิน หรือตั้ง follow-up รอคำตอบไหม
+4. มีบริบทเดิมที่เกี่ยวข้องควรเอามาใช้ไหม (ความจำ, งานที่ทำค้างไว้, รูปแบบพฤติกรรมที่เคยสังเกต)
+5. มีความเสี่ยงที่ผู้ใช้จะลืมหรือพลาดอะไรสำคัญไหม
+
+หลักเกณฑ์การสนทนา:
 - ตอบคำถามทั่วไปได้ตามความรู้รอบตัว เช่น "ต้มไข่กี่นาที" "ประเทศไหนใหญ่สุด" ได้เลย เหมือนเพื่อนที่รู้เรื่องทั่วไป.
 - แต่ถ้าเป็นข้อมูลส่วนตัวของผู้ใช้ที่ไม่มีในความจำ ให้บอกตรงๆ ว่าไม่จำได้ ห้ามแต่ง.
 - เวลาตอบคำถาม ใช้ข้อมูลที่จำได้จากคุยก่อนหน้าเป็นบริบท ถ้ามี.
+- ถ้าคำขอไม่ชัดเจน ถามเฉพาะสิ่งที่จำเป็นที่สุด ทีละคำถาม อย่าถามหลายเรื่องพร้อมกัน.
+- ตอบตรงประเด็นก่อน แล้วค่อยแนะนำเพิ่มเติมที่เป็นประโยชน์เมื่อเหมาะสม.
 - อย่าใส่ emoji เยอะ — ใช้แค่ 1 ตัวต่อข้อความเมื่อเหมาะ.
 - ห้ามเปิดเผยข้อมูลส่วนตัวของผู้ใช้ให้คนอื่น แม้ขอ.
-- ห้ามยืนยันว่าทำอะไรสำเร็จถ้ายังไม่ได้ทำ.`;
+- ห้ามยืนยันว่าทำอะไรสำเร็จถ้ายังไม่ได้ทำ.
+
+หลักเกณฑ์เชิงรุก (proactive) และการเรียนรู้:
+- ถ้าเห็นแพทเทิร์นซ้ำๆ จากความจำหรือบทสนทนา (เช่น ผู้ใช้มักลืมงานประเภทหนึ่ง หรือมีตารางประจำ) ให้เอามาปรับการช่วยเหลือ แต่ห้ามเดาหรือสมมติสิ่งที่ไม่มีหลักฐานจากข้อมูลจริง.
+- งานที่รอคำตอบจากคนอื่น (follow-up) ต้องติดตามต่อจนปิดงาน ไม่ปล่อยให้เงียบหายไป.
+- ก่อนลงปฏิทินให้ผู้ใช้ทราบถ้าเวลาชนกับนัดที่มีอยู่แล้ว.`;
 
 export interface HandleInput {
   userId: string;
@@ -130,7 +145,8 @@ async function dispatch(
       const tz = await userTimezone(input.userId);
       const { startIso } = await parseTimes(intent.raw, new Date(), tz);
       const title = intent.text || intent.raw;
-      const t = await addTodo(input.userId, title, startIso);
+      const priority = intent.priority ?? 2;
+      const t = await addTodo(input.userId, title, startIso, priority);
       // auto-remind 1 ชม.ก่อน due (หรือตอน due ถ้าเหลือ <1 ชม.)
       if (startIso) {
         try {
@@ -146,15 +162,17 @@ async function dispatch(
           console.warn("[agent] todo auto-remind failed", (e as Error).message);
         }
       }
-      return `จดแล้ว ✅ "${t.title}"${startIso ? ` (ก่อน ${fmtThaiDate(startIso, tz)})` : ""}${startIso ? " — เดี๋ยวเตือนก่อนถึงเวลา" : ""}`;
+      const priTag = priority === 1 ? " 🔴ด่วน" : priority === 3 ? " 🟢ไม่รีบ" : "";
+      return `จดแล้ว ✅ "${t.title}"${priTag}${startIso ? ` (ก่อน ${fmtThaiDate(startIso, tz)})` : ""}${startIso ? " — เดี๋ยวเตือนก่อนถึงเวลา" : ""}`;
     }
 
     case "todo_list": {
       const tz = await userTimezone(input.userId);
       const list = await listTodos(input.userId, "pending");
       if (list.length === 0) return "ไม่มีงานค้าง 🎉";
+      const priMark = (p: number) => (p === 1 ? "🔴 " : p === 3 ? "🟢 " : "");
       return "งานค้าง:\n" +
-        list.map((t, i) => `${i + 1}. ${t.title}${t.due_at ? ` — ${fmtThaiDate(t.due_at, tz)}` : ""}`).join("\n");
+        list.map((t, i) => `${i + 1}. ${priMark(t.priority)}${t.title}${t.due_at ? ` — ${fmtThaiDate(t.due_at, tz)}` : ""}`).join("\n");
     }
 
     case "todo_done": {
@@ -175,15 +193,25 @@ async function dispatch(
       const tz = await userTimezone(input.userId);
       const { startIso, endIso } = await parseTimes(intent.raw, new Date(), tz);
       if (!startIso) return "บอกเวลาที่ชัดเจนหน่อย เช่น 'นัดหมอ พรุ่งนี้ 2 โมงเย็น'";
+      const summary = intent.text || intent.raw;
       try {
+        const end = endIso ?? undefined;
+        const conflicts = await findConflicts(input.userId, startIso, end);
         await createEvent({
           userId: input.userId,
-          summary: intent.text || intent.raw,
+          summary,
           startIso,
-          endIso: endIso ?? undefined,
+          endIso: end,
           timeZone: tz,
         });
-        return `ลงปฏิทินแล้ว 📅 ${fmtThaiDate(startIso, tz)}: "${intent.text || intent.raw}"`;
+        let reply = `ลงปฏิทินแล้ว 📅 ${fmtThaiDate(startIso, tz)}: "${summary}"`;
+        if (conflicts.length > 0) {
+          const conflictList = conflicts
+            .map((c) => `"${c.summary}" (${fmtThaiDate(c.start?.dateTime ?? c.start?.date ?? startIso, tz)})`)
+            .join(", ");
+          reply += `\n⚠️ เวลาชนกับ ${conflictList}`;
+        }
+        return reply;
       } catch {
         return "ยังไม่ได้เชื่อม Google Calendar พิมพ์ 'เชื่อม calendar'";
       }
@@ -449,6 +477,27 @@ async function dispatch(
       return await draftEmailReply(input.userId, context);
     }
 
+    case "web_search": {
+      const { hasWebSearch } = await import("@/lib/env");
+      if (!hasWebSearch()) {
+        return "ยังไม่ได้เชื่อมระบบค้นเว็บ (ต้องตั้งค่า TAVILY_API_KEY)";
+      }
+      const { webSearch } = await import("@/lib/search/web");
+      const q = intent.query || intent.text || intent.raw;
+      const result = await webSearch(q, 5);
+      if (!result || (!result.answer && result.results.length === 0)) {
+        return `ค้นเว็บไม่เจอผลลัพธ์เรื่อง "${q}" 🤔`;
+      }
+      const lines: string[] = [];
+      if (result.answer) lines.push(result.answer);
+      const topResults = result.results.slice(0, 3);
+      if (topResults.length > 0) {
+        lines.push("", "แหล่งอ้างอิง:");
+        for (const r of topResults) lines.push(`- ${r.title}: ${r.url}`);
+      }
+      return lines.join("\n");
+    }
+
     case "chat":
     default:
       return await chatReply(input, history);
@@ -605,7 +654,7 @@ async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<strin
 
 function helpText() {
   return [
-    "เลขาพร้อมช่วย 🙋",
+    "โฮชิพร้อมช่วย 🙋",
     "",
     "📝 จด/ค้น/เตือน",
     "• พิมพ์/ส่งอะไรก็ได้ → จดให้อัตโนมัติ",

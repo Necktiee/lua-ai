@@ -11,7 +11,7 @@ export default async function Home() {
     <main className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-black p-8 font-sans">
       <div className="max-w-md w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-lg p-8 space-y-4">
         <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-          เลขา <span className="text-zinc-400 text-sm">— Personal LINE AI Secretary</span>
+          โฮชิ <span className="text-zinc-400 text-sm">— Personal LINE AI Secretary</span>
         </h1>
 
         <section className="space-y-1 text-sm">

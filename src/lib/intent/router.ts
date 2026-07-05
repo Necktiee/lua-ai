@@ -44,7 +44,9 @@ export type Action =
   | "travel_checklist" // checklist เดินทาง / บินพรุ่งนี้
   // Phase 9
   | "email_summary" // สรุปเมล / inbox
-  | "email_reply"; // ตอบเมล / ร่างคำตอบ
+  | "email_reply" // ตอบเมล / ร่างคำตอบ
+  // Phase 10
+  | "web_search"; // ค้นเว็บ / หาข้อมูลปัจจุบัน / ราคาล่าสุด / ข่าว
 
 export interface Intent {
   action: Action;
@@ -54,6 +56,8 @@ export interface Intent {
   query?: string;
   /** สำหรับ todo_done/cancel — index 1-based ("ทำอันแรกเสร็จแล้ว") */
   index?: number;
+  /** สำหรับ todo_add — 1=ด่วน, 2=ปกติ(default), 3=ไม่รีบ */
+  priority?: 1 | 2 | 3;
   raw: string;
 }
 
@@ -64,7 +68,7 @@ Actions:
 - remember: user ส่งข้อมูลมาให้เก็บ/จด (เช่น "จดไว้", "เก็บไว้", "อย่าลืมว่า", แปะลิงก์, ส่งไฟล์/รูป, อัดเสียง)
 - recall: user ถามหาของเก่า / ขุดความจำ ("เมื่อวานบอกอะไร", "เคยส่งลิงก์ X ไหม", "ค้นหา", "ขอไฟล์", "อันที่แล้ว", "ทำไมตอนนั้นเลือก")
 - remind: ขอให้ตั้งเตือนในอนาคต ("เตือน X", "พรุ่งนี้บอกฉัน", "อย่าลืม", "เตือนไว้กี่โมง")
-- todo_add: เพิ่มงานใน to-do list ("จดงาน", "ต้องทำ X", "เพิ่ม to-do")
+- todo_add: เพิ่มงานใน to-do list ("จดงาน", "ต้องทำ X", "เพิ่ม to-do") — ถ้ามีคำบอกความสำคัญ ให้ใส่ priority: "ด่วน/สำคัญมาก/เร่งด่วน"→1, ไม่พูดถึง→2 (ไม่ต้องใส่ field), "ไม่รีบ/ไม่เร่ง/เมื่อไรก็ได้"→3
 - todo_list: ดูงานค้าง ("มีงานอะไรบ้าง", "to-do", "ค้างอะไรอยู่")
 - todo_done: ทำเสร็จแล้ว ("ทำ X เสร็จแล้ว", "เช็คออกอันแรก", "เสร็จแล้ว")
 - todo_cancel: ยกเลิกงาน
@@ -89,6 +93,7 @@ Actions:
 - travel_checklist: ขอ checklist เดินทาง ("บินพรุ่งนี้", "checklist เดินทาง", "เตรียมตัวไป", "ไปเชียงใหม่ต้องเตรียมอะไร")
 - email_summary: ขอสรุปอีเมล ("สรุปเมล", "inbox", "มีเมลอะไรบ้าง", "เช็คเมล")
 - email_reply: ขอให้ร่างคำตอบเมล ("ตอบเมล", "ร่างคำตอบ", "ช่วยตอบเมลนี้")
+- web_search: ต้องใช้ข้อมูลปัจจุบัน/ล่าสุดที่ไม่มีทางรู้จากความรู้ทั่วไป เช่น ราคาหุ้น/ทอง/คริปโตวันนี้, ข่าวล่าสุด, อากาศเมืองอื่นตอนนี้ (ที่ไม่ใช่ location เดิม), ตารางแข่ง/ผลบอลล่าสุด, ราคาสินค้าปัจจุบัน, "หาข้อมูลเรื่อง X ให้หน่อย", "เช็คให้หน่อยว่า X" ที่ต้องอ้างอิงเว็บ
 - chat: คุยทั่วไป / ถามคำถาม / ไม่เข้ากรณีข้างต้น
 - help: ถามว่าทำได้อะไร / ใช้ยังไง
 - delete_recent: ขอลบของล่าสุดที่ส่งมา ("ลบที่พึ่งส่ง", "เอาออก")
@@ -102,8 +107,9 @@ Notes:
 - ถ้ามีตัวเลข + หน่วยเงิน (บาท/฿) และคำว่า ซื้อ/จ่าย/ใช้ไป → expense_add; ถ้ามี "จด" หรือ "เก็บไว้" → remember แม้มีราคา
 - ถ้าถาม "เป็นใคร/ชอบอะไร/เป็นยังไง" + ชื่อคน → people_ask
 - "ทำไมเลือก/ตัดสินใจ/เหตุผลที่" + สิ่งที่เลือก → decision_recall
+- คำถามทั่วไปที่ตอบจากความรู้ปกติได้ (ไม่ต้องข้อมูลสดจากเว็บ) → chat ไม่ใช่ web_search; ใช้ web_search เฉพาะเมื่อจำเป็นต้องมีข้อมูลปัจจุบัน/เปลี่ยนแปลงบ่อย
 
-Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?}`;
+Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?,"priority":1|2|3 (optional, only for todo_add)}`;
 
 export async function classify(
   userText: string,
@@ -132,6 +138,7 @@ export async function classify(
       text: typeof json.text === "string" ? json.text : userText,
       query: typeof json.query === "string" ? json.query : undefined,
       index: typeof json.index === "number" ? json.index : undefined,
+      priority: [1, 2, 3].includes(json.priority) ? (json.priority as 1 | 2 | 3) : undefined,
       raw: userText,
     };
     return applyRememberOverride(intent, userText);
@@ -161,5 +168,6 @@ function validAction(a: unknown): a is Action {
     "journal_show","goal_add","goal_log","goal_progress","decision_recall",
     "meeting_prep","travel_checklist",
     "email_summary","email_reply",
+    "web_search",
   ].includes(a as string);
 }

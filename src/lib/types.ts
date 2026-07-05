@@ -29,6 +29,8 @@ export interface TodoRecord {
   user_id: LineUserId;
   title: string;
   due_at?: string | null;
+  /** 1 = ด่วน, 2 = ปกติ (default), 3 = ไม่รีบ */
+  priority: 1 | 2 | 3;
   status: "pending" | "done" | "cancelled";
   created_at: string;
   completed_at?: string | null;

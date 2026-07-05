@@ -78,7 +78,7 @@ export async function generateMeetingBrief(userId: string, event: CalendarEvent)
       messages: [
         {
           role: "system",
-          content: "เป็นเลขา. แนะนำคำถามสำคัญ 2-3 ข้อที่ควรถามในประชุมนี้ ภาษาไทย สั้นๆ. ขึ้นต้นด้วย '? '",
+          content: "เป็นโฮชิ เลขาส่วนตัว. แนะนำคำถามสำคัญ 2-3 ข้อที่ควรถามในประชุมนี้ ภาษาไทย สั้นๆ. ขึ้นต้นด้วย '? '",
         },
         { role: "user", content: JSON.stringify(ctx) },
       ],
