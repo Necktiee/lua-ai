@@ -95,8 +95,43 @@ export async function generateMeetingBrief(userId: string, event: CalendarEvent)
   return lines.join("\n");
 }
 
-/** Get upcoming events in next N minutes for pre-meeting push. */
+/** Get upcoming events in next N minutes for pre-meeting push (on-demand chat use — swallows auth errors). */
 export async function getEventsStartingSoon(userId: string, withinMinutes = 30): Promise<CalendarEvent[]> {
+  const { events } = await getEventsStartingSoonDetailed(userId, withinMinutes);
+  return events;
+}
+
+/** Classify a thrown error from the Google Calendar client for proactive notification purposes. */
+function classifyGoogleError(msg: string): "not_connected" | "expired" | undefined {
+  if (msg.includes("ยังไม่ได้เชื่อม")) return "not_connected";
+  if (/invalid_grant|unauthorized|invalid_token|token.*expired|token.*revoked/i.test(msg)) return "expired";
+  return undefined;
+}
+
+async function fallbackDbEvents(userId: string, withinMinutes: number): Promise<CalendarEvent[]> {
+  const db = requireDb();
+  const now = new Date();
+  const cutoff = new Date(now.getTime() + withinMinutes * 60_000);
+  const { data, error } = await db
+    .from("calendar_events")
+    .select("*")
+    .eq("user_id", userId)
+    .gte("start_at", now.toISOString())
+    .lte("start_at", cutoff.toISOString())
+    .order("start_at", { ascending: true });
+  if (error) console.warn("[meeting-prep] events", error.message);
+  return (data ?? []) as CalendarEvent[];
+}
+
+/**
+ * Same as getEventsStartingSoon but surfaces whether the primary Google fetch
+ * failed due to an auth problem, so the cron can proactively notify the user
+ * instead of failing silently (Gap #6).
+ */
+export async function getEventsStartingSoonDetailed(
+  userId: string,
+  withinMinutes = 30,
+): Promise<{ events: CalendarEvent[]; authError?: "not_connected" | "expired" }> {
   try {
     const { listEventsWithinMinutes } = await import("@/lib/calendar/events");
     const items = await listEventsWithinMinutes(userId, withinMinutes);
@@ -118,21 +153,12 @@ export async function getEventsStartingSoon(userId: string, withinMinutes = 30):
         created_at: new Date().toISOString(),
       });
     }
-    return mapped;
+    return { events: mapped };
   } catch (e) {
-    console.warn("[meeting-prep] google events fallback to DB", (e as Error).message);
+    const msg = (e as Error).message;
+    const authError = classifyGoogleError(msg);
+    console.warn("[meeting-prep] google events fallback to DB", msg);
+    const events = await fallbackDbEvents(userId, withinMinutes);
+    return { events, authError };
   }
-
-  const db = requireDb();
-  const now = new Date();
-  const cutoff = new Date(now.getTime() + withinMinutes * 60_000);
-  const { data, error } = await db
-    .from("calendar_events")
-    .select("*")
-    .eq("user_id", userId)
-    .gte("start_at", now.toISOString())
-    .lte("start_at", cutoff.toISOString())
-    .order("start_at", { ascending: true });
-  if (error) console.warn("[meeting-prep] events", error.message);
-  return (data ?? []) as CalendarEvent[];
 }

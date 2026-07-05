@@ -52,3 +52,9 @@ jobs:
           curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/meeting" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -o /dev/null -w "meeting: %{http_code}\n"
+
+      - name: Weekly reflection (Sunday 20:00 local, per-user gated)
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/weekly" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "weekly: %{http_code}\n"

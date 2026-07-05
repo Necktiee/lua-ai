@@ -5,7 +5,15 @@
 import { requireDb, touchUser } from "@/lib/db/client";
 import { bangkokDateStr, localDateStr } from "@/lib/tz";
 
-export type CronPushKind = "briefing" | "evening" | "journal" | "nudge" | "overdue_todo";
+export type CronPushKind =
+  | "briefing"
+  | "evening"
+  | "journal"
+  | "nudge"
+  | "overdue_todo"
+  | "weekly"
+  | "google_auth_expired"
+  | "calendar_mirror_failed";
 
 function marker(kind: CronPushKind, day: string): string {
   return `__${kind}__:${day}`;

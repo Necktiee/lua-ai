@@ -118,17 +118,39 @@ export async function createEvent(args: {
       end: { dateTime: end, timeZone: tz },
     },
   });
-  // mirror ลง DB
+  // mirror ลง DB — retry once before giving up (Gap #2: don't silently drop the
+  // mirror row just because of a transient DB hiccup; the Google event already
+  // exists so we can't roll that back, but we can make sure the local mirror
+  // used by meeting-prep/briefing fallback actually reflects it).
   const db = requireDb();
-  const { error: dbErr } = await db.from("calendar_events").insert({
+  const mirrorRow = {
     user_id: args.userId,
     google_event_id: res.data.id,
     summary: args.summary,
     start_at: start,
     end_at: end,
     location: args.location ?? null,
-  });
-  if (dbErr) console.warn("[calendar] mirror insert", dbErr.message);
+  };
+  let dbErr = (await db.from("calendar_events").insert(mirrorRow)).error;
+  if (dbErr) {
+    await new Promise((r) => setTimeout(r, 500));
+    dbErr = (await db.from("calendar_events").insert(mirrorRow)).error;
+  }
+  if (dbErr) {
+    // Still failed after retry — notify the user directly instead of a silent
+    // console.warn, since the event is real in Google Calendar but our local
+    // mirror (used by briefing/meeting-prep DB fallback) is now out of sync.
+    console.error("[calendar] mirror insert failed after retry", dbErr.message);
+    try {
+      const { pushText } = await import("@/lib/line");
+      await pushText(
+        args.userId,
+        `⚠️ นัด "${args.summary}" ถูกสร้างใน Google Calendar แล้ว แต่บันทึกสำรองในระบบล้มเหลว — ถ้า brief ก่อนประชุมไม่มา ให้เช็คใน Google Calendar โดยตรง`,
+      );
+    } catch (e) {
+      console.warn("[calendar] mirror-failure notify also failed", (e as Error).message);
+    }
+  }
   return res.data;
 }
 

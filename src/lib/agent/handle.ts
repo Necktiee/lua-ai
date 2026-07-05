@@ -81,14 +81,25 @@ async function dispatch(
 
     case "recall": {
       const q = intent.query || intent.text || input.text;
-      const { parseDateRange } = await import("@/lib/memory/tags");
+      const { parseDateRange, detectProjectTag, extractProjectName } = await import("@/lib/memory/tags");
       const { getSettings } = await import("@/lib/settings/repo");
       const settings = await getSettings(input.userId);
       const range = parseDateRange(intent.raw, settings.timezone);
-      const cleanQuery = range.consumed ? q.replace(range.consumed, "").trim() || q : q;
+      let cleanQuery = range.consumed ? q.replace(range.consumed, "").trim() || q : q;
+      // Gap #5: "โปรเจกต์ X มีอะไรบ้าง" → filter recall to that project's tag
+      // instead of a generic semantic search (which would just match "โปรเจกต์").
+      let projectTag: string | undefined;
+      if (detectProjectTag(intent.raw)) {
+        const projectName = extractProjectName(intent.raw);
+        if (projectName) {
+          projectTag = `project:${projectName}`;
+          cleanQuery = cleanQuery.replace(new RegExp(projectName, "i"), "").trim() || cleanQuery;
+        }
+      }
       const results = await recall(input.userId, cleanQuery, 5, {
         startDate: range.startDate,
         endDate: range.endDate,
+        tag: projectTag,
       });
       if (results.length === 0) return "ไม่เจอในความทรงจำเลย 🤔 ลองใช้คำอื่น?";
       const header = range.consumed ? ` (${range.consumed})` : "";
@@ -489,13 +500,15 @@ async function doRemember(input: HandleInput): Promise<string> {
 
   const summary = await summarizeForStorage(content);
 
-  // Auto-detect tags (decision, expense, receipt, travel)
-  const { detectDecisionTag, detectExpenseTag, detectReceiptTag, detectTravelTag } = await import("@/lib/memory/tags");
+  // Auto-detect tags (decision, expense, receipt, travel, project)
+  const { detectDecisionTag, detectExpenseTag, detectReceiptTag, detectTravelTag, detectProjectTag, extractProjectName } = await import("@/lib/memory/tags");
   const tags: string[] = [];
   if (detectDecisionTag(content)) tags.push("decision");
   if (detectExpenseTag(content)) tags.push("expense");
   if (detectReceiptTag(content)) tags.push("receipt");
   if (detectTravelTag(content)) tags.push("travel");
+  const projectName = detectProjectTag(content) ? extractProjectName(content) : undefined;
+  if (projectName) tags.push("project", `project:${projectName}`);
 
   const mem = await remember({
     userId: input.userId,

@@ -181,6 +181,14 @@ export function localMonthStartISO(d: Date, timeZone: string): string {
   return zonedWallClockToUtc(`${y}-${m}-01`, 0, 0, 0, 0, timeZone).toISOString();
 }
 
+/** Day of week (0=Sun..6=Sat) in a given IANA timezone. */
+export function localWeekday(d: Date, timeZone: string): number {
+  const dow = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" })
+    .formatToParts(d)
+    .find((p) => p.type === "weekday")?.value;
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(dow ?? "Sun");
+}
+
 /** Tomorrow's calendar day bounds in Bangkok. */
 export function bangkokTomorrowBounds(): { start: string; end: string } {
   const ymd = bangkokDateStr(new Date());

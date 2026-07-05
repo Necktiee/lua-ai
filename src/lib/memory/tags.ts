@@ -121,3 +121,26 @@ export function detectReceiptTag(text: string): boolean {
 export function detectTravelTag(text: string): boolean {
   return /บิน|เครื่องบิน|โรงแรม|hotel|flight|เดินทาง|travel|วีซ่า|visa|check-?in|boarding/i.test(text);
 }
+
+/**
+ * Detect if text explicitly names a project (Gap #5 lightweight fix — no new
+ * "projects" table, just a structured `project:<name>` tag reusing the existing
+ * flexible `tags` array so memory/todos can later be filtered by project via
+ * `recall(userId, q, n, { tag: "project:ชื่อ" })` without a schema migration.
+ */
+export function detectProjectTag(text: string): boolean {
+  return /โปรเจกต์|โปรเจ็กต์|โปรเจค|โครงการ\s*\S|project\s*[:：]|งาน\s*โปรเจกต์|\bproject\b/i.test(text);
+}
+
+/**
+ * Best-effort extraction of a project name from text, e.g.
+ * "โปรเจกต์ เลขา ทำ cron เสร็จแล้ว" → "เลขา", or "project: X" → "x".
+ * Returns undefined if no clear name follows the project keyword.
+ */
+export function extractProjectName(text: string): string | undefined {
+  const m = text.match(
+    /(?:โปรเจกต์|โปรเจ็กต์|โปรเจค|โครงการ|project)\s*[:：]?\s*([^\s,.!?\n]{2,40}(?:\s+[^\s,.!?\n]+){0,2})/i,
+  );
+  if (!m) return undefined;
+  return m[1].trim().toLowerCase();
+}
