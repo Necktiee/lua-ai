@@ -517,9 +517,35 @@ async function dispatch(
       if (!result || (!result.answer && result.results.length === 0)) {
         return `ค้นเว็บไม่เจอผลลัพธ์เรื่อง "${q}" 🤔`;
       }
-      const lines: string[] = [];
-      if (result.answer) lines.push(result.answer);
+      // ประกอบ context จาก answer + snippets แล้วให้ LLM ตอบเป็นไทย
+      const snippets = result.results
+        .slice(0, 5)
+        .map((r, i) => `(${i + 1}) ${r.title}\n${r.content.slice(0, 600)}`)
+        .join("\n\n");
+      const context = [
+        result.answer ? `Tavily answer: ${result.answer}` : "",
+        snippets,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const { chat } = await import("@/lib/llm/pool");
+      const llmRes = await chat({
+        messages: [
+          {
+            role: "system",
+            content:
+              "คุณคือ 'โฮชิ' เลขาส่วนตัว. ตอบคำถามของผู้ใช้เป็นภาษาไทย กระชับ เข้าใจง่าย โดยอ้างอิงจากข้อมูลค้นเว็บที่ให้มา. ถ้าข้อมูลไม่พอ บอกตรงๆ ว่าไม่แน่ใจ. อย่าแปลวลีทางเทคนิค/ชื่อเฉพาะถ้าเรียกกันเป็นภาษาอังกฤษในไทย. ตอบ 2-5 บรรทัด.",
+          },
+          {
+            role: "user",
+            content: `คำถาม: ${q}\n\nข้อมูลค้นเว็บ:\n${context}`,
+          },
+        ],
+        options: { temperature: 0.4, maxOutputTokens: 400, timeoutMs: 30_000 },
+      });
+      const answer = llmRes.text?.trim() || result.answer || "ไม่พบข้อมูล";
       const topResults = result.results.slice(0, 3);
+      const lines = [answer];
       if (topResults.length > 0) {
         lines.push("", "แหล่งอ้างอิง:");
         for (const r of topResults) lines.push(`- ${r.title}: ${r.url}`);

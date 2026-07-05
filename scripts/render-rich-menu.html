@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:2500px; height:1686px; background:#0a0a0b; font-family: "Geist", "IBM Plex Sans Thai", "Noto Sans Thai", system-ui, sans-serif; }
+  .grid { display:grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); width:100%; height:100%; gap:0; }
+  .cell {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:32px;
+    border-right: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    color:#fafafa; text-align:center;
+    background: linear-gradient(180deg, #18181b 0%, #0a0a0b 100%);
+    transition: background .2s;
+  }
+  .cell.accent { background: linear-gradient(180deg, #052e2b 0%, #0a1a18 100%); }
+  .cell .icon { font-size: 200px; line-height:1; opacity:0.95; }
+  .cell .label { font-size: 72px; font-weight:600; letter-spacing: -0.5px; }
+  .cell .sub { font-size: 32px; opacity:0.5; margin-top: -16px; }
+  .svg-icon { width: 220px; height: 220px; }
+  .svg-icon path, .svg-icon rect, .svg-icon circle, .svg-icon line { stroke: #10b981; stroke-width: 12; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .cell:not(.accent) .svg-icon path,
+  .cell:not(.accent) .svg-icon rect,
+  .cell:not(.accent) .svg-icon circle,
+  .cell:not(.accent) .svg-icon line { stroke: #fafafa; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><path d="M75 12.5 a8 8 0 0 1 8 8 v59 a8 8 0 0 1 -8 8 h-50 a8 8 0 0 1 -8 -8 v-59 a8 8 0 0 1 8 -8"/><line x1="50" y1="8" x2="50" y2="20"/><line x1="35" y1="8" x2="35" y2="20"/><line x1="65" y1="8" x2="65" y2="20"/><line x1="25" y1="40" x2="75" y2="40"/><line x1="25" y1="55" x2="75" y2="55"/><line x1="25" y1="70" x2="60" y2="70"/></svg>
+      <div class="label">จด</div>
+      <div class="sub">พิมพ์ข้อความ</div>
+    </div>
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><circle cx="42" cy="42" r="28"/><line x1="62" y1="62" x2="88" y2="88"/></svg>
+      <div class="label">ค้น</div>
+      <div class="sub">ความจำ / เว็บ</div>
+    </div>
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><circle cx="50" cy="50" r="38"/><polyline points="50,28 50,52 68,62"/></svg>
+      <div class="label">เตือน</div>
+      <div class="sub">เวลา + เรื่อง</div>
+    </div>
+    <div class="cell accent">
+      <svg class="svg-icon" viewBox="0 0 100 100"><polyline points="20,50 42,72 80,28"/></svg>
+      <div class="label">งานค้าง</div>
+      <div class="sub">ดู to-do</div>
+    </div>
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><rect x="14" y="22" width="72" height="64" rx="6"/><line x1="14" y1="40" x2="86" y2="40"/><line x1="34" y1="12" x2="34" y2="28"/><line x1="66" y1="12" x2="66" y2="28"/></svg>
+      <div class="label">ปฏิทิน</div>
+      <div class="sub">7 วันนี้</div>
+    </div>
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><path d="M20 80 L20 50 L36 50 L36 80"/><path d="M42 80 L42 30 L58 30 L58 80"/><path d="M64 80 L64 60 L80 60 L80 80"/><line x1="14" y1="80" x2="86" y2="80"/></svg>
+      <div class="label">สรุปวัน</div>
+      <div class="sub">เช้า / เย็น</div>
+    </div>
+    <div class="cell accent">
+      <svg class="svg-icon" viewBox="0 0 100 100"><rect x="22" y="18" width="56" height="64" rx="6"/><line x1="34" y1="36" x2="66" y2="36"/><line x1="34" y1="50" x2="66" y2="50"/><line x1="34" y1="64" x2="54" y2="64"/></svg>
+      <div class="label">Dashboard</div>
+      <div class="sub">เปิดเว็บ</div>
+    </div>
+    <div class="cell">
+      <svg class="svg-icon" viewBox="0 0 100 100"><circle cx="50" cy="38" r="18"/><path d="M22 84 a28 28 0 0 1 56 0"/></svg>
+      <div class="label">ช่วยเหลือ</div>
+      <div class="sub">คำสั่งทั้งหมด</div>
+    </div>
+  </div>
+</body>
+</html>

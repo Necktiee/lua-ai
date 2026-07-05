@@ -80,6 +80,15 @@ export async function POST(req: Request) {
         continue;
       }
 
+      if (isDashboardIntent(text)) {
+        if (!env.LIFF_ID) {
+          await pushText(userId, "ยังไม่ได้เปิด LIFF dashboard — ตั้งค่า LIFF_ID ก่อน");
+          continue;
+        }
+        await pushText(userId, `เปิด dashboard ของโฮชิได้ที่ลิงก์นี้:\nhttps://liff.line.me/${env.LIFF_ID}`);
+        continue;
+      }
+
       let attachment:
         | {
             kind: "image" | "audio" | "file";
@@ -142,4 +151,8 @@ function isCalendarConnectIntent(text: string) {
   return /^(เชื่อม|ลิงค์|link|connect)\s*(google)?\s*(calendar|ปฏิทิน|cal)\b/i.test(
     text,
   );
+}
+
+function isDashboardIntent(text: string) {
+  return /^(dashboard|เปิด\s*dashboard|เปิด\s*แดชบอร์ด|เมนู|menu|หน้าหลัก|อับดุล\s*อยู่ไหน|โฮชิ\s*อยู่ไหน)\b/i.test(text);
 }
