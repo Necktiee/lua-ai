@@ -8,7 +8,9 @@ import {
   validateSignature,
   fetchMessageContent,
   pushText,
+  pushMessages,
   replyText,
+  replyMessages,
   startLoadingAnimation,
 } from "@/lib/line";
 import { handle } from "@/lib/agent/handle";
@@ -108,11 +110,16 @@ export async function POST(req: Request) {
           hasAttachment: Boolean(attachment),
           attachment,
         });
+        const replyIsFlex = typeof reply !== "string";
+        const replyText_ = replyIsFlex ? reply.text : reply;
         if (replyToken) {
-          const delivered = await replyText(replyToken, reply);
+          const delivered = replyIsFlex
+            ? await replyMessages(replyToken, reply.messages)
+            : await replyText(replyToken, replyText_);
           if (!delivered) {
             console.warn("[webhook] reply failed, falling back to push", userId);
-            await pushText(userId, reply);
+            if (replyIsFlex) await pushMessages(userId, reply.messages);
+            else await pushText(userId, replyText_);
           }
         }
       } catch (e) {

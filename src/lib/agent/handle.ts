@@ -13,6 +13,15 @@ import { getAuthUrl } from "@/lib/calendar/events";
 import { touchUser } from "@/lib/db/client";
 import { BANGKOK } from "@/lib/tz";
 import type { ChatTurn } from "@/lib/llm/types";
+import type { LineMessage } from "@/lib/line";
+import { buildTodoListFlex, buildCalendarFlex, buildTextCardFlex, buildHelpFlex, FLEX_COLORS } from "@/lib/flex/builder";
+
+/**
+ * Reply จาก handle() — ปกติเป็น plain string, แต่สำหรับ reply ที่มีค่าสูง
+ * (todo_list, calendar_add/list, briefing/evening_review, help) จะแนบ Flex
+ * message มาด้วย. `text` ใช้ log/fallback เสมอ, `messages` (ถ้ามี) คือสิ่งที่จะส่งจริง.
+ */
+export type Reply = string | { text: string; messages: LineMessage[] };
 
 const PERSONA = `คุณคือ "โฮชิ" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว. คุณเป็นผู้ชาย ใช้สรรพนามแทนตัวว่า "ผม" และลงท้ายด้วย "ครับ" ตามความเหมาะสม.
 นิสัย: สุภาพ กระชับ เป็นกันเอง ภาษาไทยเป็นหลัก ตอบสั้นทันใจ เหมือนคุยกับเพื่อนที่เก่งและจำเก่ง.
@@ -53,7 +62,7 @@ export interface HandleInput {
   };
 }
 
-export async function handle(input: HandleInput): Promise<string> {
+export async function handle(input: HandleInput): Promise<Reply> {
   const { userId } = input;
   await touchUser(userId, input.displayName);
 
@@ -70,7 +79,7 @@ export async function handle(input: HandleInput): Promise<string> {
     input.hasAttachment,
   );
 
-  let reply = "";
+  let reply: Reply = "";
   try {
     reply = await dispatch(intent, input, history);
   } catch (err) {
@@ -78,7 +87,7 @@ export async function handle(input: HandleInput): Promise<string> {
     reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
   }
 
-  await logMessage(userId, "assistant", reply);
+  await logMessage(userId, "assistant", typeof reply === "string" ? reply : reply.text);
   return reply;
 }
 
@@ -86,10 +95,12 @@ async function dispatch(
   intent: Awaited<ReturnType<typeof classify>>,
   input: HandleInput,
   history: ChatTurn[],
-): Promise<string> {
+): Promise<Reply> {
   switch (intent.action) {
-    case "help":
-      return helpText();
+    case "help": {
+      const text = helpText();
+      return { text, messages: [buildHelpFlex(HELP_SECTIONS)] };
+    }
 
     case "remember":
       return await doRemember(input);
@@ -171,8 +182,10 @@ async function dispatch(
       const list = await listTodos(input.userId, "pending");
       if (list.length === 0) return "ไม่มีงานค้าง 🎉";
       const priMark = (p: number) => (p === 1 ? "🔴 " : p === 3 ? "🟢 " : "");
-      return "งานค้าง:\n" +
+      const text = "งานค้าง:\n" +
         list.map((t, i) => `${i + 1}. ${priMark(t.priority)}${t.title}${t.due_at ? ` — ${fmtThaiDate(t.due_at, tz)}` : ""}`).join("\n");
+      const flex = buildTodoListFlex(list, (iso) => fmtThaiDate(iso, tz));
+      return { text, messages: [flex] };
     }
 
     case "todo_done": {
@@ -211,7 +224,9 @@ async function dispatch(
             .join(", ");
           reply += `\n⚠️ เวลาชนกับ ${conflictList}`;
         }
-        return reply;
+        const headerColor = conflicts.length > 0 ? FLEX_COLORS.warn : undefined;
+        const flex = buildTextCardFlex("ลงปฏิทินแล้ว 📅", reply.replace(/^ลงปฏิทินแล้ว 📅 /, ""), headerColor);
+        return { text: reply, messages: [flex] };
       } catch {
         return "ยังไม่ได้เชื่อม Google Calendar พิมพ์ 'เชื่อม calendar'";
       }
@@ -222,13 +237,23 @@ async function dispatch(
         const tz = await userTimezone(input.userId);
         const events = await listEvents(input.userId, 7);
         if (events.length === 0) return "สัปดาห์นี้ไม่มีนัด 🎉";
-        return "นัด 7 วันนี้:\n" +
+        const text = "นัด 7 วันนี้:\n" +
           events
             .map((e) => {
               const s = e.start?.dateTime ?? e.start?.date;
               return `• ${s ? fmtThaiDate(s, tz) : "?"} — ${e.summary}`;
             })
             .join("\n");
+        const flexEvents = events.map((e) => ({
+          summary: e.summary ?? "(ไม่มีชื่อ)",
+          when: (() => {
+            const s = e.start?.dateTime ?? e.start?.date;
+            return s ? fmtThaiDate(s, tz) : "?";
+          })(),
+          location: e.location ?? undefined,
+        }));
+        const flex = buildCalendarFlex(flexEvents, "นัด 7 วันนี้");
+        return { text, messages: [flex] };
       } catch {
         return "ยังไม่ได้เชื่อม Google Calendar พิมพ์ 'เชื่อม calendar'";
       }
@@ -238,14 +263,18 @@ async function dispatch(
       const { generateDailyBriefing } = await import("@/lib/briefing");
       const { getSettings } = await import("@/lib/settings/repo");
       const settings = await getSettings(input.userId);
-      return await generateDailyBriefing(input.userId, settings.timezone);
+      const text = await generateDailyBriefing(input.userId, settings.timezone);
+      const flex = buildTextCardFlex("☀️ สรุปเช้านี้", text);
+      return { text, messages: [flex] };
     }
 
     case "evening_review": {
       const { generateEveningReview } = await import("@/lib/briefing");
       const { getSettings } = await import("@/lib/settings/repo");
       const settings = await getSettings(input.userId);
-      return await generateEveningReview(input.userId, settings.timezone);
+      const text = await generateEveningReview(input.userId, settings.timezone);
+      const flex = buildTextCardFlex("🌙 สรุปก่อนนอน", text);
+      return { text, messages: [flex] };
     }
 
     case "followup_add": {
@@ -652,50 +681,76 @@ async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<strin
   return res.text || "ไม่แน่ใจจะตอบยังไง";
 }
 
+/** โครงสร้าง section สำหรับ buildHelpFlex() — คู่กับ helpText() ด้านล่าง (เนื้อหาต้องตรงกัน) */
+const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
+  {
+    title: "📝 จด/ค้น/เตือน",
+    lines: [
+      "พิมพ์/ส่งอะไรก็ได้ → จดให้อัตโนมัติ",
+      "'เคยบอกอะไรเรื่อง X' → ค้นความจำ",
+      "'เตือน X พรุ่งนี้ 9 โมง' → ตั้งเตือน",
+    ],
+  },
+  {
+    title: "📋 งาน/ปฏิทิน",
+    lines: [
+      "'จดงาน: ...' / 'มีงานค้างไหม' → to-do",
+      "'นัด X พรุ่งนี้ 2 โมงเย็น' → ลงปฏิทิน",
+      "'เชื่อม calendar' → เชื่อม Google Calendar",
+    ],
+  },
+  {
+    title: "☀️ สรุปรายวัน",
+    lines: ["'สรุปวันนี้' → Daily Briefing", "'สรุปวันนี้ก่อนนอน' → Evening Review"],
+  },
+  {
+    title: "🔁 ติดตาม",
+    lines: ["'ส่งเมลหา X แล้ว' / 'รอ A ส่งไฟล์' → ติดตามอัตโนมัติ", "'มีอะไรรอติดตามไหม'"],
+  },
+  {
+    title: "👥 คน/ความจำ",
+    lines: ["'John เป็นใคร' → ข้อมูลคนที่เคยจด"],
+  },
+  {
+    title: "💰 การเงิน",
+    lines: [
+      "'ซื้อกาแฟ 85' → บันทึกค่าใช้จ่าย",
+      "'เดือนนี้ใช้เท่าไร' → สรุปค่าใช้จ่าย",
+      "'สมัคร Netflix 199/เดือน' → subscription",
+    ],
+  },
+  {
+    title: "🎯 เป้าหมาย/ไดอารี่",
+    lines: [
+      "'ตั้งเป้า เรียนภาษา 45 นาที/วัน'",
+      "'วันนี้เรียนภาษา 30 นาที' → บันทึกความคืบหน้า",
+      "'เป้าคืบหน้ายัง'",
+      "'journal วันนี้'",
+    ],
+  },
+  {
+    title: "📋 ประชุม/เดินทาง/อีเมล",
+    lines: [
+      "'เตรียมประชุม' → brief ก่อนนัด",
+      "'บินพรุ่งนี้' → checklist เดินทาง",
+      "'สรุปเมล' → Inbox Zero",
+      "'ตอบเมล ...' → ร่างคำตอบ",
+    ],
+  },
+  {
+    title: "🗑 อื่นๆ",
+    lines: ["'ลบที่พึ่งส่ง' → ลบความจำล่าสุด"],
+  },
+];
+
 function helpText() {
-  return [
-    "โฮชิพร้อมช่วย 🙋",
-    "",
-    "📝 จด/ค้น/เตือน",
-    "• พิมพ์/ส่งอะไรก็ได้ → จดให้อัตโนมัติ",
-    "• 'เคยบอกอะไรเรื่อง X' → ค้นความจำ",
-    "• 'เตือน X พรุ่งนี้ 9 โมง' → ตั้งเตือน",
-    "",
-    "📋 งาน/ปฏิทิน",
-    "• 'จดงาน: ...' / 'มีงานค้างไหม' → to-do",
-    "• 'นัด X พรุ่งนี้ 2 โมงเย็น' → ลงปฏิทิน",
-    "• 'เชื่อม calendar' → เชื่อม Google Calendar",
-    "",
-    "☀️ สรุปรายวัน",
-    "• 'สรุปวันนี้' → Daily Briefing",
-    "• 'สรุปวันนี้ก่อนนอน' → Evening Review",
-    "",
-    "🔁 ติดตาม",
-    "• 'ส่งเมลหา X แล้ว' / 'รอ A ส่งไฟล์' → ติดตามอัตโนมัติ",
-    "• 'มีอะไรรอติดตามไหม'",
-    "",
-    "👥 คน/ความจำ",
-    "• 'John เป็นใคร' → ข้อมูลคนที่เคยจด",
-    "",
-    "💰 การเงิน",
-    "• 'ซื้อกาแฟ 85' → บันทึกค่าใช้จ่าย",
-    "• 'เดือนนี้ใช้เท่าไร' → สรุปค่าใช้จ่าย",
-    "• 'สมัคร Netflix 199/เดือน' → subscription",
-    "",
-    "🎯 เป้าหมาย/ไดอารี่",
-    "• 'ตั้งเป้า เรียนภาษา 45 นาที/วัน'",
-    "• 'วันนี้เรียนภาษา 30 นาที' → บันทึกความคืบหน้า",
-    "• 'เป้าคืบหน้ายัง'",
-    "• 'journal วันนี้'",
-    "",
-    "📋 ประชุม/เดินทาง/อีเมล",
-    "• 'เตรียมประชุม' → brief ก่อนนัด",
-    "• 'บินพรุ่งนี้' → checklist เดินทาง",
-    "• 'สรุปเมล' → Inbox Zero",
-    "• 'ตอบเมล ...' → ร่างคำตอบ",
-    "",
-    "• 'ลบที่พึ่งส่ง' → ลบความจำล่าสุด",
-  ].join("\n");
+  const lines = ["โฮชิพร้อมช่วย 🙋", ""];
+  for (const section of HELP_SECTIONS) {
+    lines.push(section.title);
+    for (const line of section.lines) lines.push(`• ${line}`);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
 }
 
 function formatRecall(results: { memory: { kind: string; content: string; created_at: string; tags?: string[] }; similarity: number }[], header = ""): string {

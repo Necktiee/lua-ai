@@ -38,7 +38,14 @@ export async function validateSignature(
   return secureEqual(expected, signature);
 }
 
+/** Generic LINE message object (text, flex, ฯลฯ) — ตรงกับ Messaging API message schema */
+export type LineMessage = Record<string, unknown>;
+
 export async function replyText(replyToken: string, text: string): Promise<boolean> {
+  return replyMessages(replyToken, [{ type: "text", text: text.slice(0, 5000) }]);
+}
+
+export async function replyMessages(replyToken: string, messages: LineMessage[]): Promise<boolean> {
   if (!hasLine()) {
     console.warn("[line] reply skipped — no token");
     return false;
@@ -50,7 +57,7 @@ export async function replyText(replyToken: string, text: string): Promise<boole
       headers: lineHeaders(),
       body: JSON.stringify({
         replyToken,
-        messages: [{ type: "text", text: text.slice(0, 5000) }],
+        messages: messages.slice(0, 5),
       }),
       signal,
     });
@@ -68,6 +75,10 @@ export async function replyText(replyToken: string, text: string): Promise<boole
 }
 
 export async function pushText(userId: string, text: string): Promise<boolean> {
+  return pushMessages(userId, [{ type: "text", text: text.slice(0, 5000) }]);
+}
+
+export async function pushMessages(userId: string, messages: LineMessage[]): Promise<boolean> {
   if (!hasLine()) {
     console.warn("[line] push skipped — no token");
     return false;
@@ -79,7 +90,7 @@ export async function pushText(userId: string, text: string): Promise<boolean> {
       headers: lineHeaders(),
       body: JSON.stringify({
         to: userId,
-        messages: [{ type: "text", text: text.slice(0, 5000) }],
+        messages: messages.slice(0, 5),
       }),
       signal,
     });
