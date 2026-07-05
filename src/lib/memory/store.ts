@@ -48,12 +48,24 @@ export interface RecallFilters {
   startDate?: string;
   /** ISO date upper bound (exclusive) */
   endDate?: string;
+  /**
+   * Minimum cosine similarity to accept a match (0-1). pgvector always
+   * returns *something* close to top-K even when nothing is truly relevant
+   * to a novel query — without a floor, recall() can confidently return
+   * unrelated memories as if they were real answers. Default 0.3 matches
+   * the threshold already used ad hoc by people/query.ts, meeting/prep.ts,
+   * and travel/checklist.ts; centralizing here means every caller gets the
+   * same quality gate instead of only the ones that remembered to add it.
+   */
+  minSimilarity?: number;
 }
 
 export interface SearchResult {
   memory: MemoryRecord;
   similarity: number;
 }
+
+const DEFAULT_MIN_SIMILARITY = 0.3;
 
 export async function recall(
   userId: string,
@@ -74,18 +86,22 @@ export async function recall(
   // pgvector ต้องการ string format "[0.1,0.2,...]"
   const vecStr = `[${vec.join(",")}]`;
 
-  const hasPostFilter = Boolean(filters?.tag || filters?.startDate || filters?.endDate);
-  const rpcLimit = hasPostFilter ? Math.min(limit * 5, 50) : limit;
-
+  // Tag/date filters are applied inside the SQL RPC (see
+  // match_memory_filters migration) so ranking + limit only ever consider
+  // rows that already satisfy the filters — avoids undercounting real
+  // matches that would otherwise be ranked outside the unfiltered top-N.
   const { data, error } = await db.rpc("match_memory", {
     query_embedding: vecStr,
     query_user: userId,
-    match_count: rpcLimit,
+    match_count: limit,
+    query_tag: filters?.tag ?? null,
+    query_start: filters?.startDate ?? null,
+    query_end: filters?.endDate ?? null,
   });
   if (error) {
     return recallTextFallback(db, userId, query, limit, filters);
   }
-  let results: SearchResult[] = (data ?? []).map((r: { id: string; content: string; kind: string; raw: unknown; storage_path: string | null; created_at: string; similarity: number | string; tags?: string[] }) => ({
+  const results: SearchResult[] = (data ?? []).map((r: { id: string; content: string; kind: string; raw: unknown; storage_path: string | null; created_at: string; similarity: number | string; tags?: string[] }) => ({
     memory: {
       id: r.id,
       kind: r.kind as MemoryRecord["kind"],
@@ -99,25 +115,16 @@ export async function recall(
     similarity: Number(r.similarity),
   }));
 
-  // Post-filter by tag + date (RPC doesn't support these filters natively)
-  if (filters?.tag) {
-    const tag = filters.tag;
-    results = results.filter((r) => (r.memory.tags ?? []).includes(tag));
-  }
-  if (filters?.startDate) {
-    const start = filters.startDate;
-    results = results.filter((r) => r.memory.created_at >= start);
-  }
-  if (filters?.endDate) {
-    const end = filters.endDate;
-    results = results.filter((r) => r.memory.created_at < end);
-  }
-  const sliced = results.slice(0, limit);
-  // If post-filter emptied vector hits, fall back to SQL-filtered text search
-  if (sliced.length === 0 && hasPostFilter) {
+  const minSim = filters?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
+  const filtered = results.filter((r) => r.similarity >= minSim);
+
+  // If the filters (tag/date/similarity) emptied the vector hits entirely,
+  // fall back to SQL-filtered text search rather than confidently returning
+  // "nothing found" when a plain ILIKE match might still exist.
+  if (filtered.length === 0 && results.length > 0) {
     return recallTextFallback(db, userId, query, limit, filters);
   }
-  return sliced;
+  return filtered;
 }
 
 async function recallTextFallback(

@@ -60,8 +60,8 @@ export async function generateMeetingBrief(userId: string, event: CalendarEvent)
 
   if (memoryResults.length > 0) {
     lines.push(`\n📝 ที่เกี่ยวข้อง`);
+    // recall() already enforces a minimum similarity floor centrally.
     for (const r of memoryResults.slice(0, 4)) {
-      if (r.similarity < 0.3) continue;
       const date = new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
       lines.push(`• ${date} — ${r.memory.content.slice(0, 120)}`);
     }

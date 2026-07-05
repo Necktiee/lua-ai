@@ -54,8 +54,8 @@ export async function askAboutPerson(userId: string, query: string): Promise<str
   // related memories
   if (memoryResults.length > 0) {
     lines.push("\nเกริ่นเกี่ยวกับเขา:");
+    // recall() already enforces a minimum similarity floor centrally.
     for (const r of memoryResults.slice(0, 4)) {
-      if (r.similarity < 0.3) continue;
       lines.push(`• ${new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" })} — ${r.memory.content.slice(0, 120)}`);
     }
   }
