@@ -89,9 +89,34 @@ const EnvSchema = z.object({
   OWNER_LINE_USER_ID: z.string().optional(),
 });
 
+/**
+ * Fail-closed invariant: single-owner mode (OWNER_LINE_USER_ID) remaps EVERY
+ * incoming userId onto the owner's account. That remap is only safe if the
+ * whitelist actually restricts who gets remapped — an empty whitelist means
+ * "allow everyone," which combined with owner-mode would let any stranger who
+ * messages the bot read/write the owner's private data. Refuse to boot in
+ * production with this combination instead of silently exposing it.
+ */
+function assertOwnerModeInvariant(parsed: Env) {
+  if (parsed.OWNER_LINE_USER_ID && parsed.LINE_USER_WHITELIST.length === 0) {
+    const msg =
+      "[env] OWNER_LINE_USER_ID is set but LINE_USER_WHITELIST is empty — " +
+      "this would remap ANY LINE user's messages onto the owner's private data. " +
+      "Set LINE_USER_WHITELIST (comma-separated userIds) before enabling single-owner mode.";
+    if (parsed.NODE_ENV === "production") {
+      console.error(msg);
+      throw new Error(msg);
+    }
+    console.warn(msg);
+  }
+}
+
 function load(): Env {
   const parsed = EnvSchema.safeParse(process.env);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    assertOwnerModeInvariant(parsed.data);
+    return parsed.data;
+  }
 
   const errors = parsed.error.flatten().fieldErrors;
   const isProd = process.env.NODE_ENV === "production";
@@ -113,7 +138,9 @@ function load(): Env {
       Object.entries(process.env).filter(([, v]) => v !== undefined && v !== ""),
     ),
   });
-  return envWithDefaults.success ? envWithDefaults.data : (fallbackDefaults as Env);
+  const result = envWithDefaults.success ? envWithDefaults.data : (fallbackDefaults as Env);
+  assertOwnerModeInvariant(result);
+  return result;
 }
 
 /** typed fallback so dev mode never crashes on missing optional vars */
