@@ -20,6 +20,19 @@ export async function getJournalEntry(userId: string, date: Date, timeZone?: str
   return (data as JournalEntry) ?? null;
 }
 
+/** Recent journal entries, newest first (for dashboard). */
+export async function listJournalEntries(userId: string, limit = 14): Promise<JournalEntry[]> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("journal_entries")
+    .select("*")
+    .eq("user_id", userId)
+    .order("entry_date", { ascending: false })
+    .limit(limit);
+  if (error) console.warn("[journal] list", error.message);
+  return (data ?? []) as JournalEntry[];
+}
+
 export async function generateAndStoreJournal(
   userId: string,
   date: Date = new Date(),

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Dashboard from "./Dashboard";
 
 type Status = "loading" | "logging-in" | "verifying" | "ready" | "error";
 
@@ -81,6 +82,14 @@ export default function LiffPage() {
     };
   }, []);
 
+  if (status === "ready" && profile) {
+    return (
+      <main className="min-h-screen bg-zinc-50 dark:bg-black font-sans">
+        <Dashboard profile={profile} />
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 dark:bg-black p-6 font-sans">
       <div className="max-w-sm w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-lg p-8 space-y-4 text-center">
@@ -102,22 +111,6 @@ export default function LiffPage() {
             >
               ลองใหม่
             </button>
-          </div>
-        )}
-        {status === "ready" && profile && (
-          <div className="space-y-3">
-            {profile.pictureUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={profile.pictureUrl}
-                alt={profile.displayName}
-                className="w-16 h-16 rounded-full mx-auto"
-              />
-            )}
-            <p className="text-zinc-700 dark:text-zinc-300">
-              สวัสดีครับ <span className="font-semibold">{profile.displayName}</span>
-            </p>
-            <p className="text-xs text-zinc-400">เข้าสู่ระบบสำเร็จ — dashboard กำลังจะมา</p>
           </div>
         )}
       </div>
