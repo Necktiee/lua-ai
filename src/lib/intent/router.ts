@@ -24,6 +24,7 @@ export type Action =
   // Phase 3
   | "followup_add" // ส่งเมลหา CEO แล้ว / รอคุณ A ส่งไฟล์
   | "followup_list" // มีอะไรรอติดตามไหม
+  | "followup_close" // ปิดเรื่องนี้ได้แล้ว / เรื่องนี้จบแล้ว / ไม่ต้องติดตามแล้ว
   // Phase 4
   | "people_ask" // John เป็นใคร / คุณ A เป็นยังไง
   // Phase 5
@@ -73,6 +74,7 @@ Actions:
 - evening_review: ขอสรุปวันตอนเย็น/ก่อนนอน ("สรุปวันนี้ก่อนนอน", "ทำอะไรไปบ้างวันนี้")
 - followup_add: เล่าว่าทำอะไรไปแล้วรอการตอบ หรือรอใครบางอย่าง ("ส่งเมลหา X แล้ว", "รอคุณ A ส่งไฟล์", "ติดตามเรื่อง")
 - followup_list: ถามว่ามีอะไรรอติดตาม ("มีอะไรรออยู่", "ติดตามอะไรอยู่ไหม")
+- followup_close: ขอปิด/ยกเลิกเรื่องที่ติดตามอยู่ ("ปิดเรื่องแรกได้แล้ว", "เรื่องนี้จบแล้ว ไม่ต้องติดตาม", "ได้ไฟล์แล้ว ปิดได้", "ยกเลิกติดตามอันที่ 2") — ระบุ index ถ้ามีเลขอันดับ
 - people_ask: ถามเกี่ยวกับคน ("John เป็นใคร", "คุณ A ชอบอะไร", "คนที่ประชุมครั้งก่อน")
 - expense_add: บันทึกค่าใช้จ่าย ("ซื้อกาแฟ 85", "ใช้ไป 500", "จ่ายค่า 500 บาท")
 - expense_summary: สรุปค่าใช้จ่าย ("เดือนนี้ใช้เท่าไร", "สรุปค่าใช้จ่าย", "ใช้ไปเท่าไรสัปดาห์นี้")
@@ -154,7 +156,7 @@ function validAction(a: unknown): a is Action {
   return [
     "remember","recall","remind","todo_add","todo_list","todo_done","todo_cancel",
     "calendar_add","calendar_list","chat","help","delete_recent",
-    "briefing","evening_review","followup_add","followup_list","people_ask",
+    "briefing","evening_review","followup_add","followup_list","followup_close","people_ask",
     "expense_add","expense_summary","subscription_add","subscription_list",
     "journal_show","goal_add","goal_log","goal_progress","decision_recall",
     "meeting_prep","travel_checklist",

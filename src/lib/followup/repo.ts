@@ -43,6 +43,16 @@ export async function listOpenFollowUps(userId: string): Promise<FollowUp[]> {
   return (data ?? []) as FollowUp[];
 }
 
+/** Close by 1-based index within listOpenFollowUps() order ("ปิดเรื่องแรก" / "ยกเลิกติดตามอันที่ 2"). */
+export async function closeFollowUpByIndex(userId: string, index: number): Promise<FollowUp | null> {
+  if (index < 1) return null;
+  const list = await listOpenFollowUps(userId);
+  const target = list[index - 1];
+  if (!target) return null;
+  const ok = await closeFollowUp(userId, target.id);
+  return ok ? target : null;
+}
+
 export async function closeFollowUp(userId: string, id: string): Promise<boolean> {
   const db = requireDb();
   const { data, error } = await db
@@ -101,6 +111,30 @@ export async function getAllStaleFollowUpsByUser(daysOld: number): Promise<Map<s
     const arr = map.get(fu.user_id) ?? [];
     arr.push(fu as FollowUp);
     map.set(fu.user_id, arr);
+  }
+  return map;
+}
+
+/**
+ * Nudge tone escalates with nudged_count, and stops entirely past MAX_NUDGES so
+ * stale follow-ups don't nag forever — instead the last nudge asks the user to
+ * explicitly close or keep it, and it's excluded from future automatic nudges.
+ */
+export const MAX_NUDGES = 5;
+
+export function nudgeTier(nudgedCount: number): "normal" | "urgent" | "final" {
+  if (nudgedCount >= MAX_NUDGES - 1) return "final";
+  if (nudgedCount >= 2) return "urgent";
+  return "normal";
+}
+
+/** Same as getAllStaleFollowUpsByUser but excludes items that already hit MAX_NUDGES. */
+export async function getAllNudgeableFollowUpsByUser(daysOld: number): Promise<Map<string, FollowUp[]>> {
+  const all = await getAllStaleFollowUpsByUser(daysOld);
+  const map = new Map<string, FollowUp[]>();
+  for (const [userId, list] of all) {
+    const filtered = list.filter((f) => f.nudged_count < MAX_NUDGES);
+    if (filtered.length > 0) map.set(userId, filtered);
   }
   return map;
 }

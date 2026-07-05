@@ -235,6 +235,29 @@ async function dispatch(
         }).join("\n");
     }
 
+    case "followup_close": {
+      const { closeFollowUpByIndex, listOpenFollowUps, closeFollowUp } = await import("@/lib/followup/repo");
+      const idx = intent.index;
+      if (idx) {
+        const fu = await closeFollowUpByIndex(input.userId, idx);
+        if (!fu) return `ไม่เจอเรื่องติดตามที่ ${idx}`;
+        return `ปิดแล้ว ✅ "${fu.subject}"`;
+      }
+      // no index — try to match by subject text, else close the single one if only one exists
+      const list = await listOpenFollowUps(input.userId);
+      if (list.length === 0) return "ไม่มีอะไรต้องติดตามอยู่แล้ว";
+      const q = (intent.text || intent.raw || "").toLowerCase();
+      const matched = list.find(
+        (f) => q && (f.subject.toLowerCase().includes(q) || q.includes(f.subject.toLowerCase())),
+      );
+      const target = matched ?? (list.length === 1 ? list[0] : undefined);
+      if (!target) {
+        return "มีเรื่องติดตามหลายอัน ระบุให้ชัดเช่น 'ปิดเรื่องแรก' หรือบอกชื่อเรื่อง";
+      }
+      const ok = await closeFollowUp(input.userId, target.id);
+      return ok ? `ปิดแล้ว ✅ "${target.subject}"` : "ปิดไม่สำเร็จ ลองใหม่อีกที";
+    }
+
     case "people_ask": {
       const { askAboutPerson } = await import("@/lib/people/query");
       const result = await askAboutPerson(input.userId, intent.query || intent.text || intent.raw);

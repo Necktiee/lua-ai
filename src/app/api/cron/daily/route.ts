@@ -8,9 +8,11 @@ import { authorizeCron } from "@/lib/cron/auth";
 import { getUsersAtLocalTime } from "@/lib/settings/repo";
 import { filterAllowed } from "@/lib/auth/whitelist";
 import { generateAndStoreJournal } from "@/lib/journal/repo";
-import { getAllStaleFollowUpsByUser, markNudged } from "@/lib/followup/repo";
+import { getAllNudgeableFollowUpsByUser, markNudged, nudgeTier } from "@/lib/followup/repo";
+import { getAllOverdueTodosByUser } from "@/lib/todo/repo";
 import { alreadySentToday, recordSentToday, clearSentToday } from "@/lib/cron/dedup";
 import { pushText } from "@/lib/line";
+import { BANGKOK } from "@/lib/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,7 +70,7 @@ export async function GET(req: Request) {
     const thresholds = Array.from(new Set(settingsMap.values()));
     let nudged = 0;
     for (const threshold of thresholds) {
-      const byUser = await getAllStaleFollowUpsByUser(threshold);
+      const byUser = await getAllNudgeableFollowUpsByUser(threshold);
       for (const [userId, followUps] of byUser) {
         if (!nudgeUsers.includes(userId)) continue;
         if (settingsMap.get(userId) !== threshold) continue;
@@ -78,19 +80,32 @@ export async function GET(req: Request) {
           if (await alreadySentToday(userId, "nudge", undefined, tz)) continue;
           const claimed = await recordSentToday(userId, "nudge", undefined, tz);
           if (!claimed) continue;
-          const lines = followUps.slice(0, 3).map((f) => {
+          const batch = followUps.slice(0, 3);
+          const lines = batch.map((f) => {
             const days = Math.floor((Date.now() - new Date(f.created_at).getTime()) / 86_400_000);
-            return `• "${f.subject}"${f.waiting_for ? ` (รอ ${f.waiting_for})` : ""} — ${days} วันแล้ว`;
+            return `• "${f.subject}"${f.waiting_for ? ` (รอ ${f.waiting_for})` : ""} — ${days} วันแล้ว (เตือนครั้งที่ ${f.nudged_count + 1})`;
           });
-          const delivered = await pushText(userId, `🔁 มี ${followUps.length} เรื่องรอติดตามนานแล้ว:\n${lines.join("\n")}\n\nจะให้ช่วยติดตามไหม?`);
+          // Escalate tone by the highest nudge count in this batch.
+          const tier = nudgeTier(Math.max(...batch.map((f) => f.nudged_count)));
+          const header =
+            tier === "final"
+              ? `⚠️ นี่เป็นการเตือนครั้งสุดท้ายสำหรับ ${followUps.length} เรื่องที่ค้างมานาน:`
+              : tier === "urgent"
+                ? `🔴 ยังไม่มีความคืบหน้า ${followUps.length} เรื่อง — ค้างนานแล้ว:`
+                : `🔁 มี ${followUps.length} เรื่องรอติดตามนานแล้ว:`;
+          const footer =
+            tier === "final"
+              ? "\n\nถ้าไม่ต้องติดตามแล้วพิมพ์ 'ปิดเรื่องแรก' (หรือระบุอันดับ) ไม่งั้นเดี๋ยวจะยังโผล่ในสรุปประจำวันไปเรื่อยๆ"
+              : "\n\nจะให้ช่วยติดตามไหม? หรือพิมพ์ 'ปิดเรื่องแรก' ถ้าจบแล้ว";
+          const delivered = await pushText(userId, `${header}\n${lines.join("\n")}${footer}`);
           if (!delivered) {
             await clearSentToday(userId, "nudge", undefined, tz);
             continue;
           }
-          for (const f of followUps.slice(0, 3)) {
+          for (const f of batch) {
             await markNudged(f.id);
           }
-          nudged += followUps.length;
+          nudged += batch.length;
         } catch (e) {
           await clearSentToday(userId, "nudge", undefined, nudgeTz.get(userId));
           console.error("[cron-nudge] failed", userId, (e as Error).message);
@@ -98,6 +113,40 @@ export async function GET(req: Request) {
       }
     }
     results.nudged = nudged;
+  }
+
+  // Overdue todos — escalate daily at user's local 09:00 (separate from the once-a-day
+  // mention in the morning briefing, and independent of briefing_enabled).
+  if (nudgeUsers.length > 0) {
+    let todoNudged = 0;
+    const byUser = await getAllOverdueTodosByUser(1);
+    for (const [userId, todos] of byUser) {
+      if (!nudgeUsers.includes(userId)) continue;
+      if (todos.length === 0) continue;
+      try {
+        const tz = nudgeTz.get(userId) ?? BANGKOK;
+        if (await alreadySentToday(userId, "overdue_todo", undefined, tz)) continue;
+        const claimed = await recordSentToday(userId, "overdue_todo", undefined, tz);
+        if (!claimed) continue;
+        const lines = todos.slice(0, 5).map((t) => {
+          const days = Math.floor((Date.now() - new Date(t.due_at!).getTime()) / 86_400_000);
+          return `• ${t.title} — เลยกำหนด ${days} วัน`;
+        });
+        const delivered = await pushText(
+          userId,
+          `⏰ งานที่เลยกำหนดแล้วยังไม่เสร็จ (${todos.length} งาน):\n${lines.join("\n")}\n\nพิมพ์ 'ทำอันแรกเสร็จแล้ว' หรือ 'ยกเลิกงานอันแรก' ได้เลย`,
+        );
+        if (!delivered) {
+          await clearSentToday(userId, "overdue_todo", undefined, tz);
+          continue;
+        }
+        todoNudged += todos.length;
+      } catch (e) {
+        await clearSentToday(userId, "overdue_todo", undefined, nudgeTz.get(userId));
+        console.error("[cron-overdue-todo] failed", userId, (e as Error).message);
+      }
+    }
+    results.overdueTodoNudged = todoNudged;
   }
 
   return Response.json(results);

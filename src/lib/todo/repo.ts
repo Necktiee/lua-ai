@@ -77,6 +77,46 @@ async function getByIndex(
   return data as TodoRecord | null;
 }
 
+/** Pending todos overdue by at least N days (for proactive escalation cron). */
+export async function getOverdueTodos(userId: string, minDaysOverdue = 1): Promise<TodoRecord[]> {
+  const db = requireDb();
+  const cutoff = new Date(Date.now() - minDaysOverdue * 86_400_000).toISOString();
+  const { data, error } = await db
+    .from("todos")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "pending")
+    .lt("due_at", cutoff)
+    .order("due_at", { ascending: true })
+    .limit(10);
+  if (error) console.warn("[todo] overdue", error.message);
+  return (data ?? []) as TodoRecord[];
+}
+
+/** All users with pending todos overdue by at least N days, grouped (for cron). */
+export async function getAllOverdueTodosByUser(minDaysOverdue = 1): Promise<Map<string, TodoRecord[]>> {
+  const db = requireDb();
+  const cutoff = new Date(Date.now() - minDaysOverdue * 86_400_000).toISOString();
+  const { data, error } = await db
+    .from("todos")
+    .select("*")
+    .eq("status", "pending")
+    .lt("due_at", cutoff)
+    .order("due_at", { ascending: true })
+    .limit(200);
+  if (error) {
+    console.warn("[todo] all overdue", error.message);
+    return new Map();
+  }
+  const map = new Map<string, TodoRecord[]>();
+  for (const t of (data ?? []) as TodoRecord[]) {
+    const arr = map.get(t.user_id) ?? [];
+    arr.push(t);
+    map.set(t.user_id, arr);
+  }
+  return map;
+}
+
 export async function setStatus(
   userId: string,
   id: string,
