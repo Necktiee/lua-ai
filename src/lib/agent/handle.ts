@@ -588,6 +588,32 @@ async function dispatch(
       return lines.join("\n");
     }
 
+    case "kb_add": {
+      const { parseKnowledge } = await import("@/lib/kb/parse");
+      const parsed = await parseKnowledge(intent.raw);
+      if (!parsed) {
+        return "อยากให้ผมจำเรื่องอะไรครับ? ลองบอกชัดๆ เช่น 'จำไว้ว่าผมชื่อ...', 'จำไว้ว่าเวลานัดประชุมให้เผื่อเวลาเดินทาง 30 นาที', หรือ 'จำไว้ว่าแฟนผมชื่อ...'";
+      }
+      const { upsertKnowledge } = await import("@/lib/kb/repo");
+      const k = await upsertKnowledge({
+        userId: input.userId,
+        category: parsed.category,
+        key: parsed.key,
+        value: parsed.value,
+        priority: parsed.priority,
+      });
+      return `จำไว้แล้วครับ 🧠 [${kbCategoryLabel(k.category)}]\n${k.key}: ${k.value}`;
+    }
+
+    case "kb_ask": {
+      const { listKnowledge } = await import("@/lib/kb/repo");
+      const rows = await listKnowledge(input.userId);
+      if (rows.length === 0) {
+        return "ผมยังไม่รู้จักข้อมูลถาวรอะไรเกี่ยวกับคุณเลยครับ ลองสอนผมดู เช่น 'จำไว้ว่าผมชื่อ...' หรือ 'จำไว้ว่าเวลาตอบอีเมลให้เป็นทางการ'";
+      }
+      return formatKnowledgeList(rows);
+    }
+
     case "chat":
     default:
       return await chatReply(input, history);
@@ -769,6 +795,14 @@ const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
     lines: ["'John เป็นใคร' → ข้อมูลคนที่เคยจด"],
   },
   {
+    title: "🧠 สอนให้รู้จักคุณ",
+    lines: [
+      "'จำไว้ว่าผมชื่อ...' → จดข้อมูลถาวรเกี่ยวกับคุณ",
+      "'จำไว้ว่าเวลาตอบเมลให้เป็นทางการ' → คำสั่งประจำ",
+      "'รู้อะไรเกี่ยวกับผมบ้าง' → ดูสิ่งที่ผมจำไว้",
+    ],
+  },
+  {
     title: "💰 การเงิน",
     lines: [
       "'ซื้อกาแฟ 85' → บันทึกค่าใช้จ่าย",
@@ -819,6 +853,39 @@ function formatRecall(results: { memory: { kind: string; content: string; create
     return `• ${date.toLocaleDateString("th-TH", { day: "numeric", month: "short", timeZone: BANGKOK })} — ${r.memory.content}${tagStr}`;
   });
   return (header ? `${header}\n` : "") + lines.join("\n");
+}
+
+const KB_CATEGORY_LABEL: Record<string, string> = {
+  sop: "คำสั่งประจำ",
+  profile: "โปรไฟล์เจ้าของ",
+  relationship: "คนสำคัญ",
+  preference: "ความชอบ",
+  context: "บริบท",
+};
+
+function kbCategoryLabel(category: string): string {
+  return KB_CATEGORY_LABEL[category] || category;
+}
+
+function formatKnowledgeList(
+  rows: { category: string; key: string; value: string; priority: number }[],
+): string {
+  const order = ["sop", "profile", "relationship", "preference", "context"];
+  const groups = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const arr = groups.get(r.category) ?? [];
+    arr.push(r);
+    groups.set(r.category, arr);
+  }
+  const lines: string[] = ["ผมจำเรื่องพวกนี้เกี่ยวกับคุณไว้ครับ 🧠", ""];
+  for (const cat of order) {
+    const arr = groups.get(cat);
+    if (!arr || arr.length === 0) continue;
+    lines.push(`【${kbCategoryLabel(cat)}】`);
+    for (const r of arr) lines.push(`• ${r.key}: ${r.value}`);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
 }
 
 function fmtThaiDate(iso: string, timeZone = BANGKOK) {
