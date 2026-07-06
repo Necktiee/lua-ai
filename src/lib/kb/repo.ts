@@ -1,0 +1,240 @@
+/**
+ * Knowledge Base (KB) repo — declarative owner profile, preferences, and
+ * standing instructions (SOP).
+ *
+ * Unlike memory/store.ts (episodic, RAG-only), priority=1 rows here are
+ * injected into the agent's context on EVERY turn regardless of semantic
+ * similarity. See supabase/migrations/20260706100000_knowledge_kb.sql for the
+ * rationale (main chat path never did RAG → never saw the owner's profile).
+ */
+import { requireDb, touchUser } from "@/lib/db/client";
+import { embedOne } from "@/lib/llm/embed";
+import type { KnowledgeRecord } from "@/lib/types";
+
+export type KnowledgeCategory = KnowledgeRecord["category"];
+
+export interface UpsertKnowledgeArgs {
+  userId: string;
+  category: KnowledgeCategory;
+  key: string;
+  value: string;
+  priority?: 1 | 2 | 3;
+  source?: KnowledgeRecord["source"];
+}
+
+/**
+ * Insert or update a knowledge fact. Unique on (user_id, category, key) so
+ * re-stating a fact ("ชื่อจริง" = ...) overwrites instead of duplicating.
+ * Embedding is best-effort — a null embedding just means the row is
+ * always-inject/list-only and won't surface via semantic recall (priority=3).
+ */
+export async function upsertKnowledge(
+  args: UpsertKnowledgeArgs,
+): Promise<KnowledgeRecord> {
+  const db = requireDb();
+  await touchUser(args.userId);
+
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embedOne(`${args.key}: ${args.value}`.slice(0, 8000));
+  } catch (err) {
+    console.warn("[kb] embed failed:", (err as Error).message);
+  }
+
+  const row = {
+    user_id: args.userId,
+    category: args.category,
+    key: args.key,
+    value: args.value,
+    priority: args.priority ?? 2,
+    source: args.source ?? "user",
+    embedding: embedding ?? null,
+  };
+
+  const { data, error } = await db
+    .from("knowledge")
+    .upsert(row, { onConflict: "user_id,category,key" })
+    .select()
+    .single();
+  if (error) throw new Error(`knowledge upsert: ${error.message}`);
+  return data as KnowledgeRecord;
+}
+
+/**
+ * All always-inject (priority=1) + optionally priority=2 rows for a user,
+ * ordered by priority then recency. Used by buildAgentContext to assemble the
+ * always-on PROFILE/SOP layer without a vector search.
+ */
+export async function listAlwaysInject(
+  userId: string,
+  maxPriority: 1 | 2 = 2,
+): Promise<KnowledgeRecord[]> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("knowledge")
+    .select("*")
+    .eq("user_id", userId)
+    .lte("priority", maxPriority)
+    .order("priority", { ascending: true })
+    .order("updated_at", { ascending: false })
+    .limit(40);
+  if (error) console.warn("[kb] listAlwaysInject", error.message);
+  return (data ?? []) as KnowledgeRecord[];
+}
+
+/** List by category (e.g. all standing SOP rules), newest first. */
+export async function listByCategory(
+  userId: string,
+  category: KnowledgeCategory,
+  limit = 50,
+): Promise<KnowledgeRecord[]> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("knowledge")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("category", category)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) console.warn("[kb] listByCategory", error.message);
+  return (data ?? []) as KnowledgeRecord[];
+}
+
+/** All knowledge for a user (dashboard / export), newest first. */
+export async function listKnowledge(
+  userId: string,
+  limit = 200,
+): Promise<KnowledgeRecord[]> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("knowledge")
+    .select("*")
+    .eq("user_id", userId)
+    .order("priority", { ascending: true })
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) console.warn("[kb] listKnowledge", error.message);
+  return (data ?? []) as KnowledgeRecord[];
+}
+
+export interface KnowledgeSearchResult {
+  knowledge: KnowledgeRecord;
+  similarity: number;
+}
+
+const DEFAULT_MIN_SIMILARITY = 0.3;
+
+/**
+ * Semantic search over knowledge (for RAG-only priority=3 facts and to enrich
+ * the always-inject set with context relevant to the current message). Mirrors
+ * memory/store.ts recall(): embed → match_knowledge RPC → min-sim floor →
+ * ILIKE fallback when embedding or vector search yields nothing.
+ */
+export async function recallKnowledge(
+  userId: string,
+  query: string,
+  limit = 5,
+  opts?: { category?: KnowledgeCategory; minSimilarity?: number },
+): Promise<KnowledgeSearchResult[]> {
+  const db = requireDb();
+
+  let vec: number[];
+  try {
+    vec = await embedOne(query.slice(0, 8000));
+  } catch (err) {
+    console.warn("[kb] embed failed, using ILIKE fallback:", (err as Error).message);
+    return recallTextFallback(db, userId, query, limit, opts?.category);
+  }
+
+  const vecStr = `[${vec.join(",")}]`;
+  const { data, error } = await db.rpc("match_knowledge", {
+    query_embedding: vecStr,
+    query_user: userId,
+    match_count: limit,
+    query_category: opts?.category ?? null,
+  });
+  if (error) {
+    return recallTextFallback(db, userId, query, limit, opts?.category);
+  }
+
+  const results: KnowledgeSearchResult[] = (data ?? []).map(
+    (r: KnowledgeRecord & { similarity: number | string }) => ({
+      knowledge: {
+        id: r.id,
+        user_id: userId,
+        category: r.category,
+        key: r.key,
+        value: r.value,
+        priority: r.priority,
+        source: r.source,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      } as KnowledgeRecord,
+      similarity: Number(r.similarity),
+    }),
+  );
+
+  const minSim = opts?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
+  const filtered = results.filter((r) => r.similarity >= minSim);
+  if (filtered.length === 0 && results.length > 0) {
+    return recallTextFallback(db, userId, query, limit, opts?.category);
+  }
+  return filtered;
+}
+
+async function recallTextFallback(
+  db: ReturnType<typeof requireDb>,
+  userId: string,
+  query: string,
+  limit: number,
+  category?: KnowledgeCategory,
+): Promise<KnowledgeSearchResult[]> {
+  // NEVER use PostgREST .or() with interpolated user input — it's filter
+  // injection (see AGENTS.md). Run two parameterized .ilike() queries (key +
+  // value) and merge, mirroring the safe pattern in people/repo.ts.
+  const pattern = `%${escapeIlike(query)}%`;
+
+  const build = (col: "key" | "value") => {
+    let q = db
+      .from("knowledge")
+      .select("*")
+      .eq("user_id", userId)
+      .ilike(col, pattern);
+    if (category) q = q.eq("category", category);
+    return q.order("updated_at", { ascending: false }).limit(limit);
+  };
+
+  const [byKey, byValue] = await Promise.all([build("key"), build("value")]);
+  if (byKey.error) console.warn("[kb] recall fallback (key)", byKey.error.message);
+  if (byValue.error) console.warn("[kb] recall fallback (value)", byValue.error.message);
+
+  // merge + dedup by id, preserving key matches first
+  const seen = new Set<string>();
+  const merged: KnowledgeRecord[] = [];
+  for (const k of [...(byKey.data ?? []), ...(byValue.data ?? [])] as KnowledgeRecord[]) {
+    if (seen.has(k.id)) continue;
+    seen.add(k.id);
+    merged.push(k);
+  }
+
+  return merged.slice(0, limit).map((k) => ({
+    knowledge: k,
+    similarity: 0.4,
+  }));
+}
+
+/** Escape `%`, `_`, and `\` for Postgres ILIKE patterns (parameterized value). */
+function escapeIlike(s: string): string {
+  return s.replace(/[\\%_]/g, "\\$&");
+}
+
+export async function deleteKnowledge(userId: string, id: string): Promise<boolean> {
+  const db = requireDb();
+  const { error, count } = await db
+    .from("knowledge")
+    .delete({ count: "exact" })
+    .eq("user_id", userId)
+    .eq("id", id);
+  if (error) console.warn("[kb] delete", error.message);
+  return (count ?? 0) > 0;
+}

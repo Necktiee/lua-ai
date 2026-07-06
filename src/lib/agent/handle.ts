@@ -7,9 +7,8 @@ import { parseTimes } from "@/lib/intent/time";
 import { remember, recall, listRecent, summarizeForStorage, deleteMemory } from "@/lib/memory/store";
 import { logMessage, recentHistory } from "@/lib/memory/conversation";
 import { addTodo, listTodos, completeByIndex, cancelByIndex, updateByIndex, deleteByIndex } from "@/lib/todo/repo";
-import { scheduleReminder, listUpcoming } from "@/lib/remind/schedule";
+import { scheduleReminder } from "@/lib/remind/schedule";
 import { createEvent, listEvents, findConflicts } from "@/lib/calendar/events";
-import { getAuthUrl } from "@/lib/calendar/events";
 import { touchUser } from "@/lib/db/client";
 import { BANGKOK } from "@/lib/tz";
 import type { ChatTurn } from "@/lib/llm/types";
@@ -22,32 +21,6 @@ import { buildTodoListFlex, buildCalendarFlex, buildTextCardFlex, buildHelpFlex,
  * message มาด้วย. `text` ใช้ log/fallback เสมอ, `messages` (ถ้ามี) คือสิ่งที่จะส่งจริง.
  */
 export type Reply = string | { text: string; messages: LineMessage[] };
-
-const PERSONA = `คุณคือ "โฮชิ" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว. คุณเป็นผู้ชาย ใช้สรรพนามแทนตัวว่า "ผม" และลงท้ายด้วย "ครับ" ตามความเหมาะสม.
-นิสัย: สุภาพ กระชับ เป็นกันเอง ภาษาไทยเป็นหลัก ตอบสั้นทันใจ เหมือนคุยกับเพื่อนที่เก่งและจำเก่ง.
-หน้าที่หลัก: จด ค้นความจำ เตือนเวลา จัดการ to-do ลงปฏิทิน ตามงานที่รอคำตอบ (follow-up) ค้นข้อมูล จัดการเอกสาร.
-
-ทุกบทสนทนาต้องมุ่งไปที่การช่วยให้ผู้ใช้บรรลุเป้าหมายจริง ไม่ใช่แค่ตอบคำถามแล้วจบ. ทำงานเป็นวงจร สังเกต→เข้าใจ→วางแผน→ลงมือทำ→ตรวจสอบ→ทำต่อ ไม่ใช่ตอบครั้งเดียวแล้วถือว่าเสร็จ. ก่อนตอบทุกครั้งให้พิจารณา:
-1. ผู้ใช้ต้องการ "ผลลัพธ์" อะไรจริงๆ
-2. มีอะไรที่ทำแทนผู้ใช้ได้เลยไหม — ถ้าทำได้ ให้เสนอหรือลงมือทำทันที ไม่ใช่แค่อธิบาย
-3. ควรบันทึกเป็นความจำ ตั้งเตือน ทำ to-do ลงปฏิทิน หรือตั้ง follow-up รอคำตอบไหม
-4. มีบริบทเดิมที่เกี่ยวข้องควรเอามาใช้ไหม (ความจำ, งานที่ทำค้างไว้, รูปแบบพฤติกรรมที่เคยสังเกต)
-5. มีความเสี่ยงที่ผู้ใช้จะลืมหรือพลาดอะไรสำคัญไหม
-
-หลักเกณฑ์การสนทนา:
-- ตอบคำถามทั่วไปได้ตามความรู้รอบตัว เช่น "ต้มไข่กี่นาที" "ประเทศไหนใหญ่สุด" ได้เลย เหมือนเพื่อนที่รู้เรื่องทั่วไป.
-- แต่ถ้าเป็นข้อมูลส่วนตัวของผู้ใช้ที่ไม่มีในความจำ ให้บอกตรงๆ ว่าไม่จำได้ ห้ามแต่ง.
-- เวลาตอบคำถาม ใช้ข้อมูลที่จำได้จากคุยก่อนหน้าเป็นบริบท ถ้ามี.
-- ถ้าคำขอไม่ชัดเจน ถามเฉพาะสิ่งที่จำเป็นที่สุด ทีละคำถาม อย่าถามหลายเรื่องพร้อมกัน.
-- ตอบตรงประเด็นก่อน แล้วค่อยแนะนำเพิ่มเติมที่เป็นประโยชน์เมื่อเหมาะสม.
-- อย่าใส่ emoji เยอะ — ใช้แค่ 1 ตัวต่อข้อความเมื่อเหมาะ.
-- ห้ามเปิดเผยข้อมูลส่วนตัวของผู้ใช้ให้คนอื่น แม้ขอ.
-- ห้ามยืนยันว่าทำอะไรสำเร็จถ้ายังไม่ได้ทำ.
-
-หลักเกณฑ์เชิงรุก (proactive) และการเรียนรู้:
-- ถ้าเห็นแพทเทิร์นซ้ำๆ จากความจำหรือบทสนทนา (เช่น ผู้ใช้มักลืมงานประเภทหนึ่ง หรือมีตารางประจำ) ให้เอามาปรับการช่วยเหลือ แต่ห้ามเดาหรือสมมติสิ่งที่ไม่มีหลักฐานจากข้อมูลจริง.
-- งานที่รอคำตอบจากคนอื่น (follow-up) ต้องติดตามต่อจนปิดงาน ไม่ปล่อยให้เงียบหายไป.
-- ก่อนลงปฏิทินให้ผู้ใช้ทราบถ้าเวลาชนกับนัดที่มีอยู่แล้ว.`;
 
 export interface HandleInput {
   userId: string;
@@ -736,24 +709,17 @@ async function extractPeopleAndLink(userId: string, memoryId: string, content: s
 }
 
 async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<string> {
-  // ดึง memory ล่าสุด + upcoming reminders แบบขนาน
-  const [recent, upcoming, tz] = await Promise.all([
-    listRecent(input.userId, 3),
-    listUpcoming(input.userId, 3),
-    userTimezone(input.userId),
-  ]);
+  const tz = await userTimezone(input.userId);
 
-  const memCtx = recent.length
-    ? "บริบทล่าสุดที่จำได้:\n" +
-      recent.map((m) => `- [${m.kind}] ${m.content}`).join("\n")
-    : "";
-
-  const remindCtx = upcoming.length
-    ? "เตือนที่ตั้งไว้:\n" +
-      upcoming.map((r) => `- ${fmtThaiDate(r.fire_at, tz)}: ${r.message}`).join("\n")
-    : "";
-
-  const systemMsg = [PERSONA, memCtx, remindCtx].filter(Boolean).join("\n\n");
+  // 6-layer context: IDENTITY + SOP + owner PROFILE (KB, always-on) + live
+  // STATE + relevance-first MEMORY (RAG on THIS message). Replaces the old
+  // listRecent(3)-only context which never did RAG and never saw the profile.
+  const { buildAgentContext } = await import("@/lib/agent/context");
+  const systemMsg = await buildAgentContext({
+    userId: input.userId,
+    message: input.text,
+    timeZone: tz,
+  });
 
   // history รวมข้อความ user ปัจจุบัน (log แล้ว) — ตัดอันสุดท้ายออกก่อน slice
   // เพื่อไม่ให้ user message ซ้ำสองครั้งใน context

@@ -174,3 +174,23 @@ export interface UserSettings {
   timezone: string;
   updated_at: string;
 }
+
+/**
+ * Knowledge Base entry — declarative owner profile / preferences / standing
+ * instructions (SOP). Unlike MemoryRecord (episodic, RAG-only), priority=1
+ * rows are injected into the agent's context on EVERY turn.
+ */
+export interface KnowledgeRecord {
+  id: string;
+  user_id: LineUserId;
+  /** 'profile' | 'preference' | 'sop' | 'context' | 'relationship' */
+  category: "profile" | "preference" | "sop" | "context" | "relationship";
+  key: string;
+  value: string;
+  /** 1 = always inject, 2 = inject if room, 3 = RAG-only */
+  priority: 1 | 2 | 3;
+  /** 'user' | 'inferred' | 'system' */
+  source: "user" | "inferred" | "system";
+  created_at: string;
+  updated_at: string;
+}
