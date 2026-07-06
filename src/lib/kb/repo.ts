@@ -242,6 +242,67 @@ function escapeIlike(s: string): string {
   return s.replace(/[\\%_]/g, "\\$&");
 }
 
+export interface UpdateKnowledgeArgs {
+  category?: KnowledgeCategory;
+  key?: string;
+  value?: string;
+  priority?: 1 | 2 | 3;
+}
+
+/**
+ * Update a single knowledge row by id (dashboard edit). Re-embeds when key or
+ * value changes so semantic recall doesn't go stale against the old vector.
+ * Returns null if the row doesn't exist, no fields changed, or the update
+ * would violate the UNIQUE(user_id,category,key) constraint.
+ */
+export async function updateKnowledge(
+  userId: string,
+  id: string,
+  patch: UpdateKnowledgeArgs,
+): Promise<KnowledgeRecord | null> {
+  const db = requireDb();
+
+  const updates: Record<string, unknown> = {};
+  if (patch.category !== undefined) updates.category = patch.category;
+  if (patch.key !== undefined) updates.key = patch.key;
+  if (patch.value !== undefined) updates.value = patch.value;
+  if (patch.priority !== undefined) updates.priority = patch.priority;
+  if (Object.keys(updates).length === 0) return null;
+
+  // Re-embed if key or value changed. Need the merged final key+value, so
+  // fetch the current row first.
+  if (patch.key !== undefined || patch.value !== undefined) {
+    const { data: current } = await db
+      .from("knowledge")
+      .select("key,value")
+      .eq("user_id", userId)
+      .eq("id", id)
+      .maybeSingle();
+    if (!current) return null;
+    const finalKey = patch.key ?? (current as { key: string }).key;
+    const finalValue = patch.value ?? (current as { value: string }).value;
+    try {
+      updates.embedding = await embedOne(`${finalKey}: ${finalValue}`.slice(0, 8000));
+    } catch (err) {
+      console.warn("[kb] re-embed on update failed:", (err as Error).message);
+      updates.embedding = null;
+    }
+  }
+
+  const { data, error } = await db
+    .from("knowledge")
+    .update(updates)
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.warn("[kb] update", error.message);
+    return null;
+  }
+  return (data as KnowledgeRecord | null) ?? null;
+}
+
 export async function deleteKnowledge(userId: string, id: string): Promise<boolean> {
   const db = requireDb();
   const { error, count } = await db

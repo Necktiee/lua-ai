@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ArrowClockwise,
   BookOpen,
+  Brain,
   CalendarBlank,
   ChartBar,
   ChatCircleDots,
@@ -136,7 +137,17 @@ interface UsageData {
   error?: string;
 }
 
-type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "system";
+interface Knowledge {
+  id: string;
+  category: "profile" | "preference" | "sop" | "relationship" | "context";
+  key: string;
+  value: string;
+  priority: 1 | 2 | 3;
+  source: "user" | "inferred" | "system";
+  updated_at: string;
+}
+
+type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "knowledge" | "system";
 
 const NAV_ITEMS: Array<{
   id: PageId;
@@ -150,6 +161,7 @@ const NAV_ITEMS: Array<{
   { id: "finance", label: "เงิน", short: "เงิน", icon: (c) => <Wallet weight="fill" className={c} /> },
   { id: "goals", label: "เป้าหมาย", short: "เป้า", icon: (c) => <Target weight="fill" className={c} /> },
   { id: "memory", label: "บันทึก", short: "จำ", icon: (c) => <NotePencil weight="fill" className={c} /> },
+  { id: "knowledge", label: "ตัวตน", short: "ตัวตน", icon: (c) => <Brain weight="fill" className={c} /> },
   { id: "system", label: "ระบบ", short: "ระบบ", icon: (c) => <Gear weight="fill" className={c} /> },
 ];
 
@@ -200,6 +212,14 @@ function PriorityDot({ p }: { p: 1 | 2 | 3 }) {
   const label = p === 1 ? "ด่วน" : p === 3 ? "ไม่รีบ" : "ปกติ";
   return <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full ${cls}`} title={label} aria-label={label} />;
 }
+
+const KB_CATEGORY_ROWS: ReadonlyArray<readonly [Knowledge["category"], string]> = [
+  ["sop", "คำสั่งประจำ"],
+  ["profile", "โปรไฟล์เจ้าของ"],
+  ["relationship", "คนสำคัญ"],
+  ["preference", "ความชอบ"],
+  ["context", "บริบท"],
+];
 
 function Pill({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -304,6 +324,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [memories, setMemories] = useState<MemoryNote[]>([]);
+  const [knowledge, setKnowledge] = useState<Knowledge[]>([]);
   const [newTodo, setNewTodo] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -315,7 +336,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   }, []);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes] = await Promise.all([
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes, knowledgeRes] = await Promise.all([
       safeFetch<StatusData | null>("/api/dashboard/status", null),
       safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
       safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=14", {}),
@@ -327,6 +348,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       safeFetch<UsageData | null>("/api/dashboard/usage", null),
       safeFetch<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
       safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=40", { memories: [] }),
+      safeFetch<{ knowledge: Knowledge[] }>("/api/dashboard/knowledge", { knowledge: [] }),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -342,6 +364,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setUsage(usageRes);
     setMeetings(meetingsRes.meetings ?? []);
     setMemories(memoriesRes.memories ?? []);
+    setKnowledge(knowledgeRes.knowledge ?? []);
     setLoaded(true);
   }, []);
 
@@ -422,6 +445,34 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("delete failed");
     } catch {
       setTodos(previous);
+    }
+  }
+
+  async function deleteKnowledgeItem(id: string) {
+    const target = knowledge.find((k) => k.id === id);
+    if (!target || !window.confirm(`ลบ "${target.key}" ถาวร?`)) return;
+    const previous = knowledge;
+    setKnowledge((prev) => prev.filter((k) => k.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/knowledge?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("delete knowledge failed");
+    } catch {
+      setKnowledge(previous);
+    }
+  }
+
+  async function setKnowledgePriority(id: string, priority: 1 | 2 | 3) {
+    const previous = knowledge;
+    setKnowledge((prev) => prev.map((k) => (k.id === id ? { ...k, priority } : k)));
+    try {
+      const r = await fetch("/api/dashboard/knowledge", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, priority }),
+      });
+      if (!r.ok) throw new Error("patch knowledge failed");
+    } catch {
+      setKnowledge(previous);
     }
   }
 
@@ -931,6 +982,70 @@ export default function Dashboard({ profile }: { profile: Profile }) {
               </>
             )}
 
+            {activePage === "knowledge" && (
+              <>
+                <Card className="bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/25 dark:to-zinc-900">
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300">Knowledge base</p>
+                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">สิ่งที่โฮชิรู้จักคุณเป็นการถาวร</h1>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ข้อเท็จจริงที่ใส่เข้าทุกการตอบ (priority 1-2) หรือค้นเจอตอนเกี่ยวข้อง (priority 3) เช่น ชื่อ อาชีพ คนสำคัญ ความชอบ และคำสั่งประจำ</p>
+                  </div>
+                </Card>
+
+                {knowledge.length === 0 ? (
+                  <Card title="ยังไม่มีข้อมูลถาวร" icon={<Brain weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    <EmptyState title="สอนให้โฮชิรู้จักคุณ" hint="ส่งใน LINE ว่า “จดไว้ว่าชื่อ...” “จำไว้ว่าฉันชอบ...” หรือ “จำว่าวิธีทำ...” แล้วข้อมูลจะขึ้นที่นี่" icon={<Brain className="h-5 w-5" />} />
+                  </Card>
+                ) : (
+                  <div className="grid gap-4">
+                    {KB_CATEGORY_ROWS.map(([cat, label]) => {
+                      const rows = knowledge.filter((k) => k.category === cat);
+                      if (rows.length === 0) return null;
+                      return (
+                        <Card key={cat} title={`${label} (${rows.length})`} icon={<Brain weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                          <ul className="space-y-2">
+                            {rows.map((k) => (
+                              <li key={k.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                                <div className="flex items-start gap-3">
+                                  <PriorityDot p={k.priority} />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{k.key}</p>
+                                      {k.source !== "user" && (
+                                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">{k.source}</span>
+                                      )}
+                                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">
+                                        {k.priority === 1 ? "ใส่ทุกครั้ง" : k.priority === 3 ? "ค้นเท่านั้น" : "ปกติ"}
+                                      </span>
+                                    </div>
+                                    <p className="mt-1 whitespace-pre-line text-sm text-zinc-600 dark:text-zinc-300">{k.value}</p>
+                                    <p className="mt-1 text-[10px] text-zinc-400">อัปเดต {fmtDate(k.updated_at)}</p>
+                                  </div>
+                                  <div className="flex flex-shrink-0 flex-col gap-1">
+                                    <button
+                                      onClick={() => setKnowledgePriority(k.id, ((k.priority % 3) + 1) as 1 | 2 | 3)}
+                                      className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                      title="สลับระดับ priority"
+                                    >
+                                      P{k.priority}
+                                    </button>
+                                    <button onClick={() => deleteKnowledgeItem(k.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete knowledge">
+                                      <Trash className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </Card>
+                      );
+                    })}
+                    <CommandHint>เพิ่ม: “จดไว้ว่าฉันชอบดื่มกาแฟดำ” · ถาม: “มีอะไรจำไว้บ้าง” · ลบ: “ลืมข้อ 2” หรือแก้ priority และลบได้ที่นี่</CommandHint>
+                  </div>
+                )}
+              </>
+            )}
+
             {activePage === "system" && (
               <>
                 <Card className="bg-gradient-to-br from-zinc-950 to-zinc-800 text-white dark:from-zinc-100 dark:to-white dark:text-zinc-950">
@@ -1016,7 +1131,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90 lg:hidden">
-        <div className="mx-auto grid max-w-2xl grid-cols-7 gap-1">
+        <div className="mx-auto grid max-w-2xl grid-cols-8 gap-1">
           {NAV_ITEMS.map((item) => {
             const active = item.id === activePage;
             return (
