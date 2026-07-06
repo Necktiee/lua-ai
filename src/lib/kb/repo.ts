@@ -134,16 +134,30 @@ export async function recallKnowledge(
   userId: string,
   query: string,
   limit = 5,
-  opts?: { category?: KnowledgeCategory; minSimilarity?: number },
+  opts?: {
+    category?: KnowledgeCategory;
+    minSimilarity?: number;
+    /**
+     * Optional pre-computed query embedding. Lets buildAgentContext reuse the
+     * single embedding it already computes for memory recall instead of paying
+     * for a second identical embed on every chat turn. When omitted, this
+     * embeds the query itself as before.
+     */
+    precomputedVec?: number[];
+  },
 ): Promise<KnowledgeSearchResult[]> {
   const db = requireDb();
 
   let vec: number[];
-  try {
-    vec = await embedOne(query.slice(0, 8000));
-  } catch (err) {
-    console.warn("[kb] embed failed, using ILIKE fallback:", (err as Error).message);
-    return recallTextFallback(db, userId, query, limit, opts?.category);
+  if (opts?.precomputedVec) {
+    vec = opts.precomputedVec;
+  } else {
+    try {
+      vec = await embedOne(query.slice(0, 8000));
+    } catch (err) {
+      console.warn("[kb] embed failed, using ILIKE fallback:", (err as Error).message);
+      return recallTextFallback(db, userId, query, limit, opts?.category);
+    }
   }
 
   const vecStr = `[${vec.join(",")}]`;

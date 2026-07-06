@@ -21,6 +21,7 @@ import { listAlwaysInject, recallKnowledge } from "@/lib/kb/repo";
 import { recall, listRecent } from "@/lib/memory/store";
 import { listTodos } from "@/lib/todo/repo";
 import { listUpcoming } from "@/lib/remind/schedule";
+import { embedOne } from "@/lib/llm/embed";
 import { BANGKOK } from "@/lib/tz";
 import type { KnowledgeRecord, MemoryRecord } from "@/lib/types";
 
@@ -169,6 +170,21 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
   const timeZone = args.timeZone || BANGKOK;
   const q = message.trim();
 
+  // Embed the current message ONCE and share the vector across both semantic
+  // recalls (memory + knowledge). This path runs on every chat turn; embedding
+  // the identical query twice doubled load on the quota-sensitive bge-m3
+  // endpoint (403-retryable) and added a second rate-limit stall before the
+  // reply LLM. The embed is a shared promise so the 4 cheap DB queries below
+  // still start immediately (full concurrency) — only the two recalls await it.
+  // On embed failure the promise resolves undefined and each recall falls back
+  // to its own ILIKE text search as before.
+  const vecPromise: Promise<number[] | undefined> = q
+    ? embedOne(q.slice(0, 8000)).catch((e) => {
+        console.warn("[context] shared embed", (e as Error).message);
+        return undefined;
+      })
+    : Promise.resolve(undefined);
+
   const [kbAlways, kbRelevant, memRelevant, memRecent, todos, reminders] =
     await Promise.all([
       listAlwaysInject(userId, 2).catch((e) => {
@@ -176,16 +192,20 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
         return [] as KnowledgeRecord[];
       }),
       q
-        ? recallKnowledge(userId, q, 4).catch((e) => {
-            console.warn("[context] kb recall", (e as Error).message);
-            return [];
-          })
+        ? vecPromise
+            .then((vec) => recallKnowledge(userId, q, 4, { precomputedVec: vec }))
+            .catch((e) => {
+              console.warn("[context] kb recall", (e as Error).message);
+              return [];
+            })
         : Promise.resolve([]),
       q
-        ? recall(userId, q, 6).catch((e) => {
-            console.warn("[context] mem recall", (e as Error).message);
-            return [];
-          })
+        ? vecPromise
+            .then((vec) => recall(userId, q, 6, undefined, vec))
+            .catch((e) => {
+              console.warn("[context] mem recall", (e as Error).message);
+              return [];
+            })
         : Promise.resolve([]),
       listRecent(userId, 3).catch((e) => {
         console.warn("[context] mem recent", (e as Error).message);

@@ -2,7 +2,7 @@
  * Memory store — บันทึกและค้น semantic ผ่าน pgvector.
  */
 import { requireDb, touchUser } from "@/lib/db/client";
-import { embed, embedOne } from "@/lib/llm/embed";
+import { embedOne } from "@/lib/llm/embed";
 import type { MemoryRecord } from "@/lib/types";
 
 export async function remember(args: {
@@ -72,15 +72,26 @@ export async function recall(
   query: string,
   limit = 5,
   filters?: RecallFilters,
+  /**
+   * Optional pre-computed query embedding. Lets a caller that already embedded
+   * this exact query (e.g. buildAgentContext, which runs recall + recallKnowledge
+   * on the same message) reuse one embedding instead of paying for two. When
+   * omitted, recall() embeds the query itself as before.
+   */
+  precomputedVec?: number[],
 ): Promise<SearchResult[]> {
   const db = requireDb();
 
   let vec: number[];
-  try {
-    vec = await embedOne(query.slice(0, 8000));
-  } catch (err) {
-    console.warn("[memory] embed failed, using ILIKE fallback:", (err as Error).message);
-    return recallTextFallback(db, userId, query, limit, filters);
+  if (precomputedVec) {
+    vec = precomputedVec;
+  } else {
+    try {
+      vec = await embedOne(query.slice(0, 8000));
+    } catch (err) {
+      console.warn("[memory] embed failed, using ILIKE fallback:", (err as Error).message);
+      return recallTextFallback(db, userId, query, limit, filters);
+    }
   }
 
   // pgvector ต้องการ string format "[0.1,0.2,...]"
