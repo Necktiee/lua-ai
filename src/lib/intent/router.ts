@@ -53,7 +53,9 @@ export type Action =
   // Phase 11 — Knowledge Base (owner profile / preferences / standing instructions)
   | "kb_add" // "จำไว้ว่าฉันชื่อ...", "โฮชิจำไว้ว่าเวลานัดอย่าก่อนบ่าย 2"
   | "kb_ask" // "รู้อะไรเกี่ยวกับฉันบ้าง", "ฉันชอบอะไร", "โฮชิจำอะไรได้บ้าง"
-  | "kb_forget"; // "ลืมข้อ 2", "ลบข้อมูลที่ว่าฉันชอบ...", "ที่จำว่าฉันชื่อ X ผิด ลบออก"
+  | "kb_forget" // "ลืมข้อ 2", "ลบข้อมูลที่ว่าฉันชอบ...", "ที่จำว่าฉันชื่อ X ผิด ลบออก"
+  // Phase 12 — Contact tiers (who matters most). Adapted from secretary-agent.
+  | "people_set_tier"; // "ตั้ง คุณแม่ เป็น P1", "คุณสมชายสำคัญที่สุด", "ปรับคนนี้เป็น P4"
 
 export interface Intent {
   action: Action;
@@ -65,6 +67,8 @@ export interface Intent {
   index?: number;
   /** สำหรับ todo_add — 1=ด่วน, 2=ปกติ(default), 3=ไม่รีบ */
   priority?: 1 | 2 | 3;
+  /** สำหรับ people_set_tier — ระดับสำคัญของคน (1=สำคัญที่สุด .. 4=ภายนอก/เย็น) */
+  tier?: 1 | 2 | 3 | 4;
   raw: string;
 }
 
@@ -107,6 +111,7 @@ Actions:
 - kb_add: เจ้าของบอกให้ "จำถาวร" เกี่ยวกับตัวเขาเอง/ความชอบ/คำสั่งประจำ (ไม่ใช่เหตุการณ์ที่เพิ่งเกิด) — โปรไฟล์ ("จำไว้ว่าฉันชื่อ X", "ฉันเป็นวิศวกร", "ฉันอยู่กรุงเทพ"), ความชอบ ("ฉันชอบกาแฟดำ", "ไม่ชอบประชุมเช้า"), คำสั่งประจำ/SOP ("โฮชิ เวลานัดประชุมอย่าก่อนบ่าย 2", "ตอบสั้นๆ พอ", "เรียกฉันว่าพี่"). ต่างจาก remember ตรงที่เป็นข้อเท็จจริงถาวรเกี่ยวกับตัวเจ้าของ/วิธีทำงาน ไม่ใช่ข้อมูล/เหตุการณ์ทั่วไป
 - kb_ask: ถามว่าเลขาจำ/รู้อะไรเกี่ยวกับตัวเจ้าของบ้าง ("รู้อะไรเกี่ยวกับฉันบ้าง", "โฮชิจำอะไรได้บ้าง", "ฉันชอบอะไร", "ฉันตั้งกฎอะไรไว้")
 - kb_forget: ขอให้ลบ/แก้ข้อมูลถาวรที่จำผิดหรือไม่ใช้แล้ว ("ลืมข้อ 2", "ลบที่จำว่าฉันชอบกาแฟ", "ที่จำว่าฉันชื่อ X ผิด ลบออก", "ไม่ต้องจำแล้วว่า...") — ระบุ index ถ้ามีเลขข้อ ("ข้อ 2"→index 2); ถ้าอ้างถึงเนื้อหา ให้ query=สิ่งที่จะลบ
+- people_set_tier: ตั้ง/ปรับระดับความสำคัญของคนที่เจ้าของรู้จัก ("ตั้ง คุณแม่ เป็น P1", "คุณสมชายสำคัญที่สุด", "ปรับคนนี้เป็น P4", "คนนี้ P2") — query=ชื่อคน, tier=ระดับ (1=สำคัญที่สุด/ครอบครัว/เจ้านาย, 2=สัมพันธ์สำคัญ, 3=ทั่วไป, 4=ภายนอก/เย็น)
 - chat: คุยทั่วไป / ถามคำถาม / ไม่เข้ากรณีข้างต้น
 - help: ถามว่าทำได้อะไร / ใช้ยังไง
 - delete_recent: ขอลบของล่าสุดที่ส่งมา ("ลบที่พึ่งส่ง", "เอาออก")
@@ -123,8 +128,9 @@ Notes:
 - คำถามทั่วไปที่ตอบจากความรู้ปกติได้ (ไม่ต้องข้อมูลสดจากเว็บ) → chat ไม่ใช่ web_search; ใช้ web_search เฉพาะเมื่อจำเป็นต้องมีข้อมูลปัจจุบัน/เปลี่ยนแปลงบ่อย
 - "จำไว้ว่าฉัน..." / "ฉันชอบ..." / "เรียกฉันว่า..." / คำสั่งวิธีทำงานถาวร → kb_add ไม่ใช่ remember; แต่ "จดว่า [เหตุการณ์/ข้อมูลทั่วไป]" → remember. เหตุการณ์ที่เพิ่งเกิด ("เมื่อกี้คุยกับ X") = remember, ข้อเท็จจริงถาวรเกี่ยวกับตัวเจ้าของ = kb_add
 - "ลืม.../ลบที่จำว่า.../ไม่ต้องจำแล้วว่า..." ที่อ้างถึงข้อมูลถาวรเกี่ยวกับตัวเจ้าของ → kb_forget ไม่ใช่ delete_recent (delete_recent = ลบ memory/ของที่เพิ่งส่งล่าสุดเท่านั้น)
+- การตั้ง/ปรับระดับความสำคัญของคน ("ตั้ง X เป็น P1", "X สำคัญที่สุด", "ปรับ X เป็น P4") → people_set_tier; การถามข้อมูลคน ("X เป็นใคร") → people_ask
 
-Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?,"priority":1|2|3 (optional, only for todo_add/todo_update)}`;
+Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?,"priority":1|2|3 (optional, only for todo_add/todo_update),"tier":1|2|3|4 (optional, only for people_set_tier)}`;
 
 export async function classify(
   userText: string,
@@ -154,6 +160,7 @@ export async function classify(
       query: typeof json.query === "string" ? json.query : undefined,
       index: typeof json.index === "number" ? json.index : undefined,
       priority: [1, 2, 3].includes(json.priority) ? (json.priority as 1 | 2 | 3) : undefined,
+      tier: [1, 2, 3, 4].includes(json.tier) ? (json.tier as 1 | 2 | 3 | 4) : undefined,
       raw: userText,
     };
     return applyRememberOverride(intent, userText);
@@ -186,5 +193,6 @@ function validAction(a: unknown): a is Action {
     "web_search",
     "meeting_list",
     "kb_add","kb_ask","kb_forget",
+    "people_set_tier",
   ].includes(a as string);
 }

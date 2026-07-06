@@ -67,6 +67,8 @@ export interface Person {
   name: string;
   aliases: string[];
   notes: Record<string, unknown>;
+  /** Contact tier P1-P4 (user-mutable). null = uncategorized, treated as P3. */
+  tier?: 1 | 2 | 3 | 4 | null;
   last_seen?: string | null;
   created_at: string;
   updated_at: string;

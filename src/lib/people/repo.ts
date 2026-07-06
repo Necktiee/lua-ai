@@ -11,6 +11,7 @@ export async function upsertPerson(args: {
   name: string;
   aliases?: string[];
   notes?: Record<string, unknown>;
+  tier?: 1 | 2 | 3 | 4;
 }): Promise<Person> {
   const db = requireDb();
   await touchUser(args.userId);
@@ -52,12 +53,19 @@ export async function upsertPerson(args: {
   }
 
   if (existing) {
-    // merge notes
+    // merge notes + aliases. tier only set if explicitly provided (never clobber
+    // an existing tier on a passive upsert from message extraction).
     const mergedNotes = { ...(existing.notes ?? {}), ...(args.notes ?? {}) };
     const mergedAliases = Array.from(new Set([...(existing.aliases ?? []), ...(args.aliases ?? [])]));
+    const updates: Record<string, unknown> = {
+      notes: mergedNotes,
+      aliases: mergedAliases,
+      last_seen: new Date().toISOString(),
+    };
+    if (args.tier !== undefined) updates.tier = args.tier;
     const { data, error } = await db
       .from("people")
-      .update({ notes: mergedNotes, aliases: mergedAliases, last_seen: new Date().toISOString() })
+      .update(updates)
       .eq("id", existing.id)
       .select()
       .single();
@@ -72,11 +80,37 @@ export async function upsertPerson(args: {
       name: args.name,
       aliases: args.aliases ?? [],
       notes: args.notes ?? {},
+      tier: args.tier ?? null,
     })
     .select()
     .single();
   if (error) throw new Error(`people insert: ${error.message}`);
   return data as Person;
+}
+
+/**
+ * Set a contact's priority tier (P1-P4). Returns null if the person doesn't
+ * exist. Used by the people_set_tier intent so the owner can weight contacts
+ * via LINE ("ตั้ง คุณแม่ เป็น P1").
+ */
+export async function setPersonTier(
+  userId: string,
+  id: string,
+  tier: 1 | 2 | 3 | 4,
+): Promise<Person | null> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("people")
+    .update({ tier })
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.warn("[people] setTier", error.message);
+    return null;
+  }
+  return (data as Person | null) ?? null;
 }
 
 export async function findPerson(userId: string, nameQuery: string): Promise<Person | null> {
@@ -113,7 +147,8 @@ export async function listPeople(userId: string, limit = 20): Promise<Person[]> 
     .from("people")
     .select("*")
     .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
+    .order("tier", { ascending: true, nullsFirst: false })
+    .order("last_seen", { ascending: false, nullsFirst: false })
     .limit(limit);
   if (error) console.warn("[people] list", error.message);
   return (data ?? []) as Person[];

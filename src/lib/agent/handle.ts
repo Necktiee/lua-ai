@@ -356,6 +356,34 @@ async function dispatch(
       return result;
     }
 
+    case "people_set_tier": {
+      const { findPerson, setPersonTier } = await import("@/lib/people/repo");
+      const tier =
+        intent.tier ??
+        ([1, 2, 3, 4].find((n) => new RegExp(`\\b${n}\\b|P${n}\\b`, "i").test(intent.raw)) as
+          | 1
+          | 2
+          | 3
+          | 4
+          | undefined);
+      if (!tier) {
+        return "ระบุระดับด้วยครับ — P1 (สำคัญที่สุด), P2 (สัมพันธ์สำคัญ), P3 (ทั่วไป), P4 (ภายนอก/เย็น)\nเช่น “ตั้ง คุณแม่ เป็น P1”";
+      }
+      const nameQuery = intent.query || intent.text || "";
+      if (!nameQuery.trim()) {
+        return "บอกชื่อคนที่จะปรับระดับด้วยครับ เช่น “ตั้ง คุณแม่ เป็น P1”";
+      }
+      const person = await findPerson(input.userId, nameQuery);
+      if (!person) {
+        return `ยังไม่รู้จักคนชื่อ "${nameQuery}" ครับ — ลองสะกดชื่อใหม่ หรือพูดถึงชื่อนี้ในบทสนทนาก่อนแล้วโฮชิจะจำได้`;
+      }
+      const updated = await setPersonTier(input.userId, person.id, tier);
+      if (!updated) return "ปรับระดับไม่สำเร็จครับ ลองอีกครั้ง";
+      const label =
+        tier === 1 ? "สำคัญที่สุด" : tier === 2 ? "สัมพันธ์สำคัญ" : tier === 4 ? "ภายนอก/เย็น" : "ทั่วไป";
+      return `ตั้งให้แล้วครับ ⭐ P${tier} · ${person.name}\nระดับ: ${label}`;
+    }
+
     case "expense_add": {
       const { parseExpense } = await import("@/lib/expense/parse");
       const { addExpense } = await import("@/lib/expense/repo");
@@ -810,7 +838,10 @@ const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
   },
   {
     title: "👥 คน/ความจำ",
-    lines: ["'John เป็นใคร' → ข้อมูลคนที่เคยจด"],
+    lines: [
+      "'John เป็นใคร' → ข้อมูลคนที่เคยจด",
+      "'ตั้ง คุณแม่ เป็น P1' → ระดับความสำคัญ (P1 สุด–P4 เย็น)",
+    ],
   },
   {
     title: "🧠 สอนให้รู้จักคุณ",

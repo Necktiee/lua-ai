@@ -21,9 +21,10 @@ import { listAlwaysInject, recallKnowledge } from "@/lib/kb/repo";
 import { recall, listRecent } from "@/lib/memory/store";
 import { listTodos } from "@/lib/todo/repo";
 import { listUpcoming } from "@/lib/remind/schedule";
+import { listPeople } from "@/lib/people/repo";
 import { embedOne } from "@/lib/llm/embed";
 import { BANGKOK } from "@/lib/tz";
-import type { KnowledgeRecord, MemoryRecord } from "@/lib/types";
+import type { KnowledgeRecord, MemoryRecord, Person } from "@/lib/types";
 
 // ─── L0 IDENTITY ────────────────────────────────────────────────
 export const IDENTITY = `คุณคือ "โฮชิ" — เลขาส่วนตัวบน LINE ของผู้ใช้คนเดียว. คุณเป็นผู้ชาย ใช้สรรพนามแทนตัวว่า "ผม" และลงท้ายด้วย "ครับ" ตามความเหมาะสม.
@@ -100,6 +101,40 @@ function formatKnowledge(rows: KnowledgeRecord[]): string {
     );
   }
   return parts.join("\n");
+}
+
+// ─── L2.5 RELATIONSHIPS (people + tiers) ─────────────────────────
+// Contact tiers (P1-P4) borrowed from secretary-agent (kylem148): they are
+// context the LLM reasons with when weighting follow-ups, nudges, and meeting
+// prep — NOT hard rules. A high tier informs prioritization the same way a
+// human assistant weighs "who is this person to the owner".
+const TIER_LABEL: Record<number, string> = {
+  1: "P1",
+  2: "P2",
+  3: "P3",
+  4: "P4",
+};
+
+/** Compact a notes jsonb into a short readable suffix (e.g. role/relationship). */
+function compactNotes(notes: Record<string, unknown>): string {
+  const entries = Object.entries(notes)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .slice(0, 2)
+    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+  return entries.length ? ` — ${entries.join("; ")}` : "";
+}
+
+function formatPeople(rows: Person[]): string {
+  if (rows.length === 0) return "";
+  const lines = rows.map((p) => {
+    const tag = p.tier ? `[${TIER_LABEL[p.tier] ?? "P?"}] ` : "";
+    const aliases =
+      p.aliases && p.aliases.length > 0
+        ? ` (เรียก: ${p.aliases.slice(0, 3).map(esc).join(", ")})`
+        : "";
+    return `- ${tag}${esc(p.name)}${aliases}${compactNotes(p.notes ?? {})}`;
+  });
+  return `<people>\n${lines.join("\n")}\n</people>`;
 }
 
 // ─── L4 MEMORY (RAG, relevance + recency blend) ─────────────────
@@ -185,7 +220,7 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
       })
     : Promise.resolve(undefined);
 
-  const [kbAlways, kbRelevant, memRelevant, memRecent, todos, reminders] =
+  const [kbAlways, kbRelevant, memRelevant, memRecent, todos, reminders, people] =
     await Promise.all([
       listAlwaysInject(userId, 2).catch((e) => {
         console.warn("[context] kb always", (e as Error).message);
@@ -219,6 +254,10 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
         console.warn("[context] reminders", (e as Error).message);
         return [];
       }),
+      listPeople(userId, 12).catch((e) => {
+        console.warn("[context] people", (e as Error).message);
+        return [] as Person[];
+      }),
     ]);
 
   // ── L2 PROFILE: merge always-inject + message-relevant KB, dedup by id ──
@@ -237,6 +276,9 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
     }
   }
   const profileBlock = formatKnowledge(kbMerged);
+
+  // ── L2.5 RELATIONSHIPS ──
+  const peopleBlock = formatPeople(people);
 
   // ── L3 STATE ──
   const stateLines: string[] = [];
@@ -260,7 +302,7 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
   // ── L4 MEMORY (RAG) ──
   const memoryBlock = formatMemory(memRelevant, memRecent);
 
-  return [IDENTITY, CORE_SOP, profileBlock, stateBlock, memoryBlock]
+  return [IDENTITY, CORE_SOP, profileBlock, peopleBlock, stateBlock, memoryBlock]
     .filter(Boolean)
     .join("\n\n");
 }
