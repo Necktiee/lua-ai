@@ -5,6 +5,7 @@
 import { google } from "googleapis";
 import { requireDb } from "@/lib/db/client";
 import { env } from "@/lib/env";
+import type { CalendarEvent } from "@/lib/types";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
@@ -216,4 +217,58 @@ function addOneHour(iso: string) {
   const d = new Date(iso);
   d.setHours(d.getHours() + 1);
   return d.toISOString();
+}
+
+/**
+ * Events in [startIso, endIso] — prefers Google Calendar (authoritative:
+ * includes events the user added directly or accepted via invite, which never
+ * reach the local calendar_events mirror), falls back to the mirror (bot-created
+ * events only) when Google isn't connected or the API fails. Used by the daily
+ * briefing / evening review so they never silently miss real meetings.
+ */
+export async function listEventsInRange(
+  userId: string,
+  startIso: string,
+  endIso: string,
+): Promise<{ events: CalendarEvent[]; source: "google" | "mirror" }> {
+  try {
+    const auth = await getAuthedClient(userId);
+    const calendar = google.calendar({ version: "v3", auth });
+    const res = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: startIso,
+      timeMax: endIso,
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+    const events = ((res.data.items ?? []) as unknown[]).map((e) => {
+      const ev = e as { id?: string | null; summary?: string | null; start?: { dateTime?: string | null; date?: string | null }; end?: { dateTime?: string | null; date?: string | null }; location?: string | null; created?: string | null };
+      return {
+        id: ev.id ?? "",
+        user_id: userId,
+        google_event_id: ev.id ?? null,
+        summary: ev.summary ?? "(ไม่มีชื่อ)",
+        start_at: (ev.start?.dateTime ?? ev.start?.date ?? startIso) as string,
+        end_at: (ev.end?.dateTime ?? ev.end?.date ?? null) as string | null,
+        location: ev.location ?? null,
+        created_at: ev.created ?? new Date().toISOString(),
+      } as CalendarEvent;
+    });
+    return { events, source: "google" };
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (!/ยังไม่ได้เชื่อม|No tokens|invalid_grant|unauthorized/i.test(msg)) {
+      console.warn("[calendar] listEventsInRange google failed, mirror fallback", msg);
+    }
+  }
+  const db = requireDb();
+  const { data, error } = await db
+    .from("calendar_events")
+    .select("*")
+    .eq("user_id", userId)
+    .gte("start_at", startIso)
+    .lte("start_at", endIso)
+    .order("start_at", { ascending: true });
+  if (error) console.warn("[calendar] listEventsInRange mirror", error.message);
+  return { events: (data ?? []) as CalendarEvent[], source: "mirror" };
 }

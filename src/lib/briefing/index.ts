@@ -21,6 +21,7 @@
  *   2. ...
  */
 import { requireDb } from "@/lib/db/client";
+import { listEventsInRange } from "@/lib/calendar/events";
 import { listRecent } from "@/lib/memory/store";
 import { chat } from "@/lib/llm/pool";
 import { getTodayWeather, weatherToThai } from "@/lib/weather";
@@ -50,17 +51,12 @@ function dayBounds(timeZone: string) {
 }
 
 async function getTodayCalendarEvents(userId: string, timeZone: string): Promise<CalendarEvent[]> {
-  const db = requireDb();
   const { start, end } = dayBounds(timeZone);
-  const { data, error } = await db
-    .from("calendar_events")
-    .select("*")
-    .eq("user_id", userId)
-    .gte("start_at", start)
-    .lte("start_at", end)
-    .order("start_at", { ascending: true });
-  if (error) console.warn("[briefing] calendar", error.message);
-  return (data ?? []) as CalendarEvent[];
+  // Google-first, mirror-fallback — see listEventsInRange. Events the user
+  // added directly in Google Calendar or accepted via invite never reach the
+  // local mirror, so reading the mirror alone would silently miss meetings.
+  const { events } = await listEventsInRange(userId, start, end);
+  return events;
 }
 
 async function getPendingTodos(userId: string): Promise<TodoRecord[]> {
@@ -220,17 +216,11 @@ export async function generateEveningReview(userId: string, timeZone = BANGKOK):
     lines.push(`❌ ค้าง ${pending.length} งาน`);
   }
 
-  // Tomorrow preview (Bangkok calendar day)
+  // Tomorrow preview — Google-first via listEventsInRange so invites the user
+  // accepted in Google directly show up here too (mirror only has bot-created events).
   const { start: tmrStart, end: tmrEnd } = localTomorrowBounds(timeZone);
-  const db = requireDb();
-  const { data: tmrEvents } = await db
-    .from("calendar_events")
-    .select("*")
-    .eq("user_id", userId)
-    .gte("start_at", tmrStart)
-    .lte("start_at", tmrEnd)
-    .order("start_at", { ascending: true });
-  const tomorrowEvents = (tmrEvents ?? []) as CalendarEvent[];
+  const { events: tmrEvents } = await listEventsInRange(userId, tmrStart, tmrEnd);
+  const tomorrowEvents = tmrEvents as CalendarEvent[];
 
   // LLM suggestion for tomorrow
   try {
