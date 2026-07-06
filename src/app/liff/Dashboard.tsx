@@ -198,6 +198,23 @@ function CardSkeleton() {
   );
 }
 
+/**
+ * Fetch JSON with a per-call fallback. A single endpoint failing (network
+ * error, non-JSON 500 error page, etc.) must NOT blank the whole dashboard —
+ * previously load() used Promise.all over 11 bare fetches, so one rejection
+ * left setLoaded(true) unreachable and the dashboard stuck on skeletons
+ * forever. Each safeFetch degrades independently.
+ */
+async function safeFetch<T>(url: string, fallback: T): Promise<T> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return fallback;
+    return (await r.json()) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function Dashboard({ profile }: { profile: Profile }) {
   const [statusData, setStatusData] = useState<StatusData | null>(null);
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -219,17 +236,17 @@ export default function Dashboard({ profile }: { profile: Profile }) {
 
   const load = useCallback(async () => {
     const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes] = await Promise.all([
-      fetch("/api/dashboard/status").then((r) => r.json()),
-      fetch("/api/dashboard/todos?filter=pending").then((r) => r.json()),
-      fetch("/api/dashboard/calendar?days=7").then((r) => r.json()),
-      fetch("/api/dashboard/expenses").then((r) => r.json()),
-      fetch("/api/dashboard/goals").then((r) => r.json()),
-      fetch("/api/dashboard/journal?limit=5").then((r) => r.json()),
-      fetch("/api/dashboard/followups").then((r) => r.json()),
-      fetch("/api/dashboard/messages?limit=20").then((r) => r.json()),
-      fetch("/api/dashboard/usage").then((r) => r.json()),
-      fetch("/api/dashboard/meetings").then((r) => r.json()),
-      fetch("/api/dashboard/memories?limit=20").then((r) => r.json()),
+      safeFetch<StatusData | null>("/api/dashboard/status", null),
+      safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
+      safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=7", {}),
+      safeFetch<{ expenses?: Expense[]; summary?: ExpenseSummary | null; subscriptions?: Subscription[] }>("/api/dashboard/expenses", {}),
+      safeFetch<{ goals: Goal[] }>("/api/dashboard/goals", { goals: [] }),
+      safeFetch<{ entries: JournalEntry[] }>("/api/dashboard/journal?limit=5", { entries: [] }),
+      safeFetch<{ followUps: FollowUp[] }>("/api/dashboard/followups", { followUps: [] }),
+      safeFetch<{ messages: Msg[] }>("/api/dashboard/messages?limit=20", { messages: [] }),
+      safeFetch<UsageData | null>("/api/dashboard/usage", null),
+      safeFetch<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
+      safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=20", { memories: [] }),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
