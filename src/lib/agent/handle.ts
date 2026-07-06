@@ -6,7 +6,7 @@ import { classify } from "@/lib/intent/router";
 import { parseTimes } from "@/lib/intent/time";
 import { remember, recall, listRecent, summarizeForStorage, deleteMemory } from "@/lib/memory/store";
 import { logMessage, recentHistory } from "@/lib/memory/conversation";
-import { addTodo, listTodos, completeByIndex, cancelByIndex } from "@/lib/todo/repo";
+import { addTodo, listTodos, completeByIndex, cancelByIndex, updateByIndex, deleteByIndex } from "@/lib/todo/repo";
 import { scheduleReminder, listUpcoming } from "@/lib/remind/schedule";
 import { createEvent, listEvents, findConflicts } from "@/lib/calendar/events";
 import { getAuthUrl } from "@/lib/calendar/events";
@@ -210,6 +210,47 @@ async function dispatch(
       const t = await cancelByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
       return `ยกเลิกแล้ว "${t.title}"`;
+    }
+
+    case "todo_update": {
+      let idx = intent.index;
+      if (!idx) {
+        const pending = await listTodos(input.userId, "pending");
+        if (pending.length === 0) return "ไม่มีงานค้างให้แก้";
+        if (pending.length > 1) return "มีหลายงานค้าง ระบุเลขด้วย เช่น 'แก้งานที่ 2 เป็น โทรหาแม่'";
+        idx = 1;
+      }
+
+      const tz = await userTimezone(input.userId);
+      const { startIso } = await parseTimes(intent.raw, new Date(), tz);
+      const title = intent.text.trim();
+      const patch = {
+        ...(title ? { title } : {}),
+        ...(startIso ? { dueAt: startIso } : {}),
+        ...(intent.priority ? { priority: intent.priority } : {}),
+      };
+      if (Object.keys(patch).length === 0) {
+        return "บอกสิ่งที่จะแก้หน่อย เช่น 'แก้งานที่ 2 เป็น โทรหาแม่', 'เลื่อนงานแรกไปพรุ่งนี้', หรือ 'ปรับงานแรกเป็นด่วน'";
+      }
+
+      const t = await updateByIndex(input.userId, idx, patch);
+      if (!t) return `ไม่เจองานที่ ${idx}`;
+      const priTag = t.priority === 1 ? " 🔴ด่วน" : t.priority === 3 ? " 🟢ไม่รีบ" : "";
+      return `แก้แล้ว ✅ งานที่ ${idx}: "${t.title}"${priTag}${t.due_at ? ` (${fmtThaiDate(t.due_at, tz)})` : ""}`;
+    }
+
+    case "todo_delete": {
+      let idx = intent.index;
+      if (!idx) {
+        const pending = await listTodos(input.userId, "pending");
+        if (pending.length === 0) return "ไม่มีงานค้างให้ลบ";
+        if (pending.length > 1) return "มีหลายงานค้าง ระบุเลขด้วย เช่น 'ลบงานที่ 2'";
+        idx = 1;
+      }
+
+      const t = await deleteByIndex(input.userId, idx);
+      if (!t) return `ไม่เจองานที่ ${idx}`;
+      return `ลบถาวรแล้ว 🗑 "${t.title}"`;
     }
 
     case "calendar_add": {
@@ -743,6 +784,8 @@ const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
     title: "📋 งาน/ปฏิทิน",
     lines: [
       "'จดงาน: ...' / 'มีงานค้างไหม' → to-do",
+      "'แก้งานที่ 2 เป็น ...' / 'เลื่อนงานแรกไปพรุ่งนี้'",
+      "'ทำงานแรกเสร็จแล้ว' / 'ยกเลิกงานแรก' / 'ลบงานที่ 2'",
       "'นัด X พรุ่งนี้ 2 โมงเย็น' → ลงปฏิทิน",
       "'เชื่อม calendar' → เชื่อม Google Calendar",
     ],

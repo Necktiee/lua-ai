@@ -4,6 +4,13 @@
 import { requireDb, touchUser } from "@/lib/db/client";
 import type { TodoRecord } from "@/lib/types";
 
+export interface TodoPatch {
+  title?: string;
+  dueAt?: string | null;
+  priority?: 1 | 2 | 3;
+  status?: TodoRecord["status"];
+}
+
 export async function addTodo(
   userId: string,
   title: string,
@@ -47,16 +54,75 @@ export async function setPriority(
   id: string,
   priority: 1 | 2 | 3,
 ): Promise<TodoRecord | null> {
+  return updateTodo(userId, id, { priority });
+}
+
+export async function updateTodo(
+  userId: string,
+  id: string,
+  patch: TodoPatch,
+): Promise<TodoRecord | null> {
+  const updates: Record<string, string | number | null> = {};
+  if (patch.title !== undefined) {
+    const title = patch.title.trim();
+    if (!title) return null;
+    updates.title = title;
+  }
+  if (patch.dueAt !== undefined) updates.due_at = patch.dueAt;
+  if (patch.priority !== undefined) updates.priority = patch.priority;
+  if (patch.status !== undefined) {
+    updates.status = patch.status;
+    updates.completed_at = patch.status === "done" ? new Date().toISOString() : null;
+  }
+  if (Object.keys(updates).length === 0) return null;
+
   const db = requireDb();
   const { data, error } = await db
     .from("todos")
-    .update({ priority })
+    .update(updates)
     .eq("user_id", userId)
     .eq("id", id)
     .select()
-    .single();
-  if (error) console.warn("[todo] setPriority", error.message);
+    .maybeSingle();
+  if (error) console.warn("[todo] updateTodo", error.message);
   return data as TodoRecord | null;
+}
+
+export async function updateByIndex(
+  userId: string,
+  index: number,
+  patch: TodoPatch,
+): Promise<TodoRecord | null> {
+  if (index < 1) return null;
+  const target = await getByIndex(userId, index);
+  if (!target) return null;
+  return updateTodo(userId, target.id, patch);
+}
+
+export async function deleteTodo(
+  userId: string,
+  id: string,
+): Promise<TodoRecord | null> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("todos")
+    .delete()
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) console.warn("[todo] deleteTodo", error.message);
+  return data as TodoRecord | null;
+}
+
+export async function deleteByIndex(
+  userId: string,
+  index: number,
+): Promise<TodoRecord | null> {
+  if (index < 1) return null;
+  const target = await getByIndex(userId, index);
+  if (!target) return null;
+  return deleteTodo(userId, target.id);
 }
 
 /** index = 1-based, อ้างตาม list pending order */
@@ -144,17 +210,5 @@ export async function setStatus(
   id: string,
   status: TodoRecord["status"],
 ): Promise<TodoRecord | null> {
-  const db = requireDb();
-  const { data, error } = await db
-    .from("todos")
-    .update({
-      status,
-      completed_at: status === "done" ? new Date().toISOString() : null,
-    })
-    .eq("user_id", userId)
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) console.warn("[todo] setStatus", error.message);
-  return data as TodoRecord | null;
+  return updateTodo(userId, id, { status });
 }

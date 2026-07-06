@@ -13,6 +13,8 @@ export type Action =
   | "todo_list"
   | "todo_done"
   | "todo_cancel"
+  | "todo_update"
+  | "todo_delete"
   | "calendar_add"
   | "calendar_list"
   | "chat" // คุยทั่วไป
@@ -55,7 +57,7 @@ export interface Intent {
   text: string;
   /** สำหรับ recall — คำค้น */
   query?: string;
-  /** สำหรับ todo_done/cancel — index 1-based ("ทำอันแรกเสร็จแล้ว") */
+  /** สำหรับ todo_done/cancel/update/delete — index 1-based ("ทำอันแรกเสร็จแล้ว") */
   index?: number;
   /** สำหรับ todo_add — 1=ด่วน, 2=ปกติ(default), 3=ไม่รีบ */
   priority?: 1 | 2 | 3;
@@ -73,6 +75,8 @@ Actions:
 - todo_list: ดูงานค้าง ("มีงานอะไรบ้าง", "to-do", "ค้างอะไรอยู่")
 - todo_done: ทำเสร็จแล้ว ("ทำ X เสร็จแล้ว", "เช็คออกอันแรก", "เสร็จแล้ว")
 - todo_cancel: ยกเลิกงาน
+- todo_update: แก้งานเดิม เช่น เปลี่ยนชื่อ/เลื่อนวัน/เปลี่ยน priority ("แก้งานที่ 2 เป็น X", "เลื่อนงานแรกไปพรุ่งนี้", "ปรับงานแรกเป็นด่วน") — ระบุ index ถ้ามีเลขอันดับ; ถ้าเป็นการเปลี่ยนชื่อ ให้ text=ชื่อใหม่เท่านั้น; ถ้าแค่เลื่อนวันหรือเปลี่ยน priority ให้ text=""
+- todo_delete: ลบงานถาวร ("ลบงานที่ 2", "ลบ todo แรกออก") — ไม่ใช่ยกเลิกแบบเก็บประวัติ
 - calendar_add: นัด/ประชุม/กิจกรรม ("นัดหมอ", "ประชุม", "มีนัด", "ลงปฏิทิน")
 - calendar_list: ถามตาราง ("พรุ่งนี้มีนัดไหม", "สัปดาห์นี้ว่าไหม")
 - briefing: ขอสรุปวันนี้ ("สรุปวันนี้", "วันนี้มีอะไรบ้าง", "เบริฟวันนี้", "สรุปให้หน่อย")
@@ -111,7 +115,7 @@ Notes:
 - "ทำไมเลือก/ตัดสินใจ/เหตุผลที่" + สิ่งที่เลือก → decision_recall
 - คำถามทั่วไปที่ตอบจากความรู้ปกติได้ (ไม่ต้องข้อมูลสดจากเว็บ) → chat ไม่ใช่ web_search; ใช้ web_search เฉพาะเมื่อจำเป็นต้องมีข้อมูลปัจจุบัน/เปลี่ยนแปลงบ่อย
 
-Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?,"priority":1|2|3 (optional, only for todo_add)}`;
+Return STRICT JSON: {"action":"...","text":"...","query":"...optional","index":number?,"priority":1|2|3 (optional, only for todo_add/todo_update)}`;
 
 export async function classify(
   userText: string,
@@ -163,7 +167,7 @@ function applyRememberOverride(intent: Intent, userText: string): Intent {
 
 function validAction(a: unknown): a is Action {
   return [
-    "remember","recall","remind","todo_add","todo_list","todo_done","todo_cancel",
+    "remember","recall","remind","todo_add","todo_list","todo_done","todo_cancel","todo_update","todo_delete",
     "calendar_add","calendar_list","chat","help","delete_recent",
     "briefing","evening_review","followup_add","followup_list","followup_close","people_ask",
     "expense_add","expense_summary","subscription_add","subscription_list",

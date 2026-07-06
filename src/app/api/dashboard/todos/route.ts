@@ -1,8 +1,8 @@
 /**
- * Dashboard: todos list + create + update (status/priority).
+ * Dashboard: todos CRUD.
  */
 import { requireSessionUser } from "@/lib/auth/require-session";
-import { addTodo, listTodos, setStatus, setPriority } from "@/lib/todo/repo";
+import { addTodo, deleteTodo, listTodos, updateTodo } from "@/lib/todo/repo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,7 +38,13 @@ export async function PATCH(req: Request) {
   const userId = await requireSessionUser();
   if (userId instanceof Response) return userId;
 
-  let body: { id?: string; status?: "pending" | "done" | "cancelled"; priority?: 1 | 2 | 3 };
+  let body: {
+    id?: string;
+    title?: string;
+    dueAt?: string | null;
+    status?: "pending" | "done" | "cancelled";
+    priority?: 1 | 2 | 3;
+  };
   try {
     body = await req.json();
   } catch {
@@ -46,8 +52,24 @@ export async function PATCH(req: Request) {
   }
   if (!body.id) return Response.json({ error: "id required" }, { status: 400 });
 
-  let todo = null;
-  if (body.status) todo = await setStatus(userId, body.id, body.status);
-  if (body.priority) todo = await setPriority(userId, body.id, body.priority);
+  const todo = await updateTodo(userId, body.id, {
+    title: body.title,
+    dueAt: body.dueAt,
+    status: body.status,
+    priority: body.priority,
+  });
+  if (!todo) return Response.json({ error: "todo not found or no changes" }, { status: 404 });
+  return Response.json({ todo });
+}
+
+export async function DELETE(req: Request) {
+  const userId = await requireSessionUser();
+  if (userId instanceof Response) return userId;
+
+  const id = new URL(req.url).searchParams.get("id");
+  if (!id) return Response.json({ error: "id required" }, { status: 400 });
+
+  const todo = await deleteTodo(userId, id);
+  if (!todo) return Response.json({ error: "todo not found" }, { status: 404 });
   return Response.json({ todo });
 }
