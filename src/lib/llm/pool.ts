@@ -147,7 +147,11 @@ async function callOnce(
   const client = getClient(cfg, cfg.keys[keyIdx]);
   const model = options.lite && cfg.liteModel ? cfg.liteModel : cfg.chatModel;
   const controller = new AbortController();
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  // 30s default (not 60s) — the LINE webhook after() has a 60s hard budget
+  // shared by classify + parse + chat-reply; no single LLM call should be
+  // allowed to consume the whole budget. Callers needing more (none currently)
+  // can pass an explicit timeoutMs.
+  const timeoutMs = options.timeoutMs ?? 30_000;
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
   try {

@@ -185,16 +185,23 @@ export async function summarizeForStorage(text: string): Promise<string> {
   if (text.length <= 300) return text;
   // dynamic import เพื่อ avoid cycle
   const { chat } = await import("@/lib/llm/pool");
-  const res = await chat({
-    messages: [
-      {
-        role: "system",
-        content:
-          "Summarize the following into 1-2 short Thai sentences, keep all key facts (names, numbers, dates, places).",
-      },
-      { role: "user", content: text },
-    ],
-    options: { lite: true, temperature: 0.2, maxOutputTokens: 200 },
-  });
-  return res.text || text.slice(0, 300);
+  try {
+    const res = await chat({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Summarize the following into 1-2 short Thai sentences, keep all key facts (names, numbers, dates, places).",
+        },
+        { role: "user", content: text },
+      ],
+      options: { lite: true, temperature: 0.2, maxOutputTokens: 200, timeoutMs: 15_000 },
+    });
+    return res.text || text.slice(0, 300);
+  } catch (e) {
+    // summarize is best-effort — never let a slow/broken LLM error out the
+    // whole remember(). Fall back to a truncated original.
+    console.warn("[memory] summarize failed, using truncated original:", (e as Error).message);
+    return text.slice(0, 300);
+  }
 }
