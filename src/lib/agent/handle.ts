@@ -614,6 +614,24 @@ async function dispatch(
       return formatKnowledgeList(rows);
     }
 
+    case "kb_forget": {
+      const { listKnowledge, deleteKnowledge } = await import("@/lib/kb/repo");
+      const rows = await listKnowledge(input.userId);
+      if (rows.length === 0) {
+        return "ยังไม่มีข้อมูลถาวรอะไรให้ลบครับ";
+      }
+      const ordered = orderKnowledge(rows);
+      const target = resolveKnowledgeTarget(ordered, intent.index, intent.query || intent.text);
+      if (!target) {
+        return `ไม่แน่ใจว่าจะให้ลบข้อไหนครับ ลองดูรายการก่อนด้วย 'รู้อะไรเกี่ยวกับผมบ้าง' แล้วบอกเลขข้อ เช่น 'ลืมข้อ 2'`;
+      }
+      const ok = await deleteKnowledge(input.userId, target.id);
+      if (!ok) {
+        return "ลบไม่สำเร็จครับ ลองใหม่อีกครั้ง";
+      }
+      return `ลบให้แล้วครับ 🗑️ [${kbCategoryLabel(target.category)}]\n${target.key}: ${target.value}`;
+    }
+
     case "chat":
     default:
       return await chatReply(input, history);
@@ -800,6 +818,7 @@ const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
       "'จำไว้ว่าผมชื่อ...' → จดข้อมูลถาวรเกี่ยวกับคุณ",
       "'จำไว้ว่าเวลาตอบเมลให้เป็นทางการ' → คำสั่งประจำ",
       "'รู้อะไรเกี่ยวกับผมบ้าง' → ดูสิ่งที่ผมจำไว้",
+      "'ลืมข้อ 2' / 'ลบที่จำว่า...' → ลบข้อมูลที่จำผิด",
     ],
   },
   {
@@ -867,24 +886,73 @@ function kbCategoryLabel(category: string): string {
   return KB_CATEGORY_LABEL[category] || category;
 }
 
-function formatKnowledgeList(
-  rows: { category: string; key: string; value: string; priority: number }[],
-): string {
-  const order = ["sop", "profile", "relationship", "preference", "context"];
-  const groups = new Map<string, typeof rows>();
+const KB_CATEGORY_ORDER = ["sop", "profile", "relationship", "preference", "context"];
+
+/**
+ * Canonical display order for a user's knowledge rows: grouped by category
+ * (sop→profile→relationship→preference→context), preserving each group's
+ * incoming order. Shared by formatKnowledgeList (numbered display) and the
+ * kb_forget resolver so "ลืมข้อ N" always maps to the item shown as #N.
+ */
+function orderKnowledge<T extends { category: string }>(rows: T[]): T[] {
+  const groups = new Map<string, T[]>();
   for (const r of rows) {
     const arr = groups.get(r.category) ?? [];
     arr.push(r);
     groups.set(r.category, arr);
   }
-  const lines: string[] = ["ผมจำเรื่องพวกนี้เกี่ยวกับคุณไว้ครับ 🧠", ""];
-  for (const cat of order) {
+  const ordered: T[] = [];
+  for (const cat of KB_CATEGORY_ORDER) {
     const arr = groups.get(cat);
-    if (!arr || arr.length === 0) continue;
-    lines.push(`【${kbCategoryLabel(cat)}】`);
-    for (const r of arr) lines.push(`• ${r.key}: ${r.value}`);
-    lines.push("");
+    if (arr) ordered.push(...arr);
   }
+  // include any unknown category not in KB_CATEGORY_ORDER, appended last
+  for (const [cat, arr] of groups) {
+    if (!KB_CATEGORY_ORDER.includes(cat)) ordered.push(...arr);
+  }
+  return ordered;
+}
+
+/**
+ * Resolve which knowledge row the owner means to forget. Prefers an explicit
+ * 1-based index ("ลืมข้อ 2") against the canonical `orderKnowledge` ordering;
+ * otherwise does a case-insensitive substring match on key+value, returning a
+ * unique hit only (ambiguous multi-match → null so we ask instead of guessing).
+ */
+function resolveKnowledgeTarget<T extends { key: string; value: string }>(
+  ordered: T[],
+  index?: number,
+  query?: string,
+): T | null {
+  if (typeof index === "number" && index >= 1 && index <= ordered.length) {
+    return ordered[index - 1];
+  }
+  const q = (query ?? "").trim().toLowerCase();
+  if (!q) return null;
+  const matches = ordered.filter(
+    (r) =>
+      r.key.toLowerCase().includes(q) || r.value.toLowerCase().includes(q),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function formatKnowledgeList(
+  rows: { category: string; key: string; value: string; priority: number }[],
+): string {
+  const ordered = orderKnowledge(rows);
+  const lines: string[] = ["ผมจำเรื่องพวกนี้เกี่ยวกับคุณไว้ครับ 🧠", ""];
+  let lastCat = "";
+  let n = 0;
+  for (const r of ordered) {
+    if (r.category !== lastCat) {
+      if (lastCat) lines.push("");
+      lines.push(`【${kbCategoryLabel(r.category)}】`);
+      lastCat = r.category;
+    }
+    n += 1;
+    lines.push(`${n}. ${r.key}: ${r.value}`);
+  }
+  lines.push("", "ถ้าจำผิดบอกได้ครับ เช่น 'ลืมข้อ 2' หรือ 'ลบที่จำว่า...'");
   return lines.join("\n").trimEnd();
 }
 
