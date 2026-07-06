@@ -62,7 +62,7 @@ export async function generateMeetingBrief(userId: string, event: CalendarEvent)
     lines.push(`\n📝 ที่เกี่ยวข้อง`);
     // recall() already enforces a minimum similarity floor centrally.
     for (const r of memoryResults.slice(0, 4)) {
-      const date = new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+      const date = new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short", timeZone: BANGKOK });
       lines.push(`• ${date} — ${r.memory.content.slice(0, 120)}`);
     }
   }

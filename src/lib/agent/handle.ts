@@ -68,6 +68,14 @@ export async function handle(input: HandleInput): Promise<Reply> {
   const userId = canonicalUserId(input.userId);
   await touchUser(userId, input.displayName);
 
+  // Thread the canonical owner id through EVERY downstream feature op. Without
+  // this, dispatch()/doRemember()/chatReply() would key memories, todos,
+  // reminders, calendar, expenses, etc. on the raw incoming userId while
+  // conversation history + dashboard use the canonical owner — fragmenting the
+  // single-owner data set across two ids. Whitelist already ran in the webhook
+  // before handle(), so the raw id is no longer needed here.
+  const canonicalInput: HandleInput = { ...input, userId };
+
   // บันทึกฝั่ง user
   const userTextForLog =
     input.text + (input.attachment ? ` [${input.attachment.kind}]` : "");
@@ -83,7 +91,7 @@ export async function handle(input: HandleInput): Promise<Reply> {
 
   let reply: Reply = "";
   try {
-    reply = await dispatch(intent, input, history);
+    reply = await dispatch(intent, canonicalInput, history);
   } catch (err) {
     console.error("[agent] dispatch error", err);
     reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
@@ -799,7 +807,7 @@ function formatRecall(results: { memory: { kind: string; content: string; create
   const lines = results.map((r) => {
     const date = new Date(r.memory.created_at);
     const tagStr = (r.memory.tags ?? []).length > 0 ? ` ${r.memory.tags!.map((t) => `#${t}`).join("")}` : "";
-    return `• ${date.toLocaleDateString("th-TH", { day: "numeric", month: "short" })} — ${r.memory.content}${tagStr}`;
+    return `• ${date.toLocaleDateString("th-TH", { day: "numeric", month: "short", timeZone: BANGKOK })} — ${r.memory.content}${tagStr}`;
   });
   return (header ? `${header}\n` : "") + lines.join("\n");
 }

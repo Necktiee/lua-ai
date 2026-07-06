@@ -8,6 +8,7 @@ import { env } from "@/lib/env";
 import { getReminder, markFired, releaseFired } from "@/lib/remind/schedule";
 import { isUserAllowed } from "@/lib/auth/whitelist";
 import { pushText } from "@/lib/line";
+import { BANGKOK } from "@/lib/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
   try {
     const delivered = await pushText(
       r.user_id,
-      `⏰ ${r.message}\n(ตั้งไว้ตั้งแต่ ${new Date(r.created_at).toLocaleString("th-TH")})`,
+      `⏰ ${r.message}\n(ตั้งไว้ตั้งแต่ ${new Date(r.created_at).toLocaleString("th-TH", { timeZone: BANGKOK })})`,
     );
     if (!delivered) {
       await releaseFired(r.id);

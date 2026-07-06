@@ -36,7 +36,16 @@ export async function getTodayWeather(locationOverride?: string): Promise<Weathe
       Math.abs(cur.dt - now) < Math.abs(best.dt - now) ? cur : best,
     );
     const afternoon = data.list.find((e) => {
-      const h = new Date(e.dt * 1000).getHours();
+      // Must check the hour in Thailand's timezone, not the server's local
+      // time (Vercel runs UTC — UTC 14-18 is actually 21:00-01:00 in
+      // Thailand, i.e. late night, not afternoon at all).
+      const h = Number(
+        new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Asia/Bangkok",
+          hour: "2-digit",
+          hour12: false,
+        }).format(new Date(e.dt * 1000)),
+      );
       return h >= 14 && h <= 18;
     });
     const rainChance = afternoon?.pop !== undefined ? Math.round(afternoon.pop * 100) : undefined;

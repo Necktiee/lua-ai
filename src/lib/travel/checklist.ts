@@ -4,6 +4,7 @@
  */
 import { recall } from "@/lib/memory/store";
 import { chat } from "@/lib/llm/pool";
+import { BANGKOK } from "@/lib/tz";
 
 export async function generateTravelChecklist(userId: string, travelContext: string): Promise<string> {
   // Recall travel-related memories
@@ -48,7 +49,7 @@ export async function generateTravelChecklist(userId: string, travelContext: str
     lines.push(`\n📝 ที่เคยจดเกี่ยวกับทริปนี้`);
     // recall() already enforces a minimum similarity floor centrally.
     for (const r of results.slice(0, 3)) {
-      const date = new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+      const date = new Date(r.memory.created_at).toLocaleDateString("th-TH", { day: "numeric", month: "short", timeZone: BANGKOK });
       lines.push(`• ${date} — ${r.memory.content.slice(0, 100)}`);
     }
   }
