@@ -25,7 +25,11 @@ async function callGemini(
   const key = pickKey();
   const url = `${BASE}/${MODEL}:generateContent`;
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 60_000);
+  // 25s, not 60s — this runs inside the LINE webhook after() (60s hard budget)
+  // alongside summarize + embed; gemini-flash transcribes typical LINE voice
+  // messages / describes images in <10s. The caller (doRemember) falls back to
+  // a placeholder on failure, so a bound here never errors the whole remember.
+  const t = setTimeout(() => controller.abort(), 25_000);
   try {
     const res = await fetch(url, {
       method: "POST",
