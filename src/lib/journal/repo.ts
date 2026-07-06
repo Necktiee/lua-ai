@@ -4,6 +4,7 @@
  */
 import { requireDb, touchUser } from "@/lib/db/client";
 import { chat } from "@/lib/llm/pool";
+import { listEventsInRange } from "@/lib/calendar/events";
 import { bangkokDateStr, bangkokDayBounds, localDateStr, localDayBounds } from "@/lib/tz";
 import type { JournalEntry } from "@/lib/types";
 
@@ -44,11 +45,11 @@ export async function generateAndStoreJournal(
 
   const { start, end } = timeZone ? localDayBounds(date, timeZone) : bangkokDayBounds(date);
 
-  const [memoriesToday, todosDone, todosPending, events] = await Promise.all([
+  const [memoriesToday, todosDone, todosPending, calResult] = await Promise.all([
     db.from("memory").select("id, content").eq("user_id", userId).gte("created_at", start).lte("created_at", end).order("created_at", { ascending: false }).limit(15),
     db.from("todos").select("title").eq("user_id", userId).eq("status", "done").gte("completed_at", start).lte("completed_at", end),
     db.from("todos").select("title").eq("user_id", userId).eq("status", "pending"),
-    db.from("calendar_events").select("summary,start_at").eq("user_id", userId).gte("start_at", start).lte("start_at", end),
+    listEventsInRange(userId, start, end),
   ]);
 
   const recent = memoriesToday.data ?? [];
@@ -56,7 +57,7 @@ export async function generateAndStoreJournal(
     memories: recent.slice(0, 10).map((m: { content: string }) => m.content.slice(0, 100)),
     todosCompleted: (todosDone.data ?? []).map((t: { title: string }) => t.title),
     todosStillPending: (todosPending.data ?? []).slice(0, 5).map((t: { title: string }) => t.title),
-    events: (events.data ?? []).map((e: { summary: string; start_at: string }) => ({ title: e.summary, time: e.start_at })),
+    events: calResult.events.map((e) => ({ title: e.summary, time: e.start_at })),
   };
 
   let content: string;
