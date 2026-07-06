@@ -16,6 +16,7 @@ import {
   Gear,
   ChartBar,
   ClipboardText,
+  NotePencil,
 } from "@phosphor-icons/react";
 
 interface Profile {
@@ -113,6 +114,14 @@ interface Meeting {
   created_at: string;
 }
 
+interface MemoryNote {
+  id: string;
+  kind: string;
+  content: string;
+  tags?: string[];
+  created_at: string;
+}
+
 interface UsageData {
   summary: {
     totalCalls: number;
@@ -203,12 +212,13 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [memories, setMemories] = useState<MemoryNote[]>([]);
   const [newTodo, setNewTodo] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes] = await Promise.all([
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes] = await Promise.all([
       fetch("/api/dashboard/status").then((r) => r.json()),
       fetch("/api/dashboard/todos?filter=pending").then((r) => r.json()),
       fetch("/api/dashboard/calendar?days=7").then((r) => r.json()),
@@ -219,6 +229,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       fetch("/api/dashboard/messages?limit=20").then((r) => r.json()),
       fetch("/api/dashboard/usage").then((r) => r.json()),
       fetch("/api/dashboard/meetings").then((r) => r.json()),
+      fetch("/api/dashboard/memories?limit=20").then((r) => r.json()),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -233,6 +244,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setMessages(msgRes.messages ?? []);
     setUsage(usageRes);
     setMeetings(meetingsRes.meetings ?? []);
+    setMemories(memoriesRes.memories ?? []);
     setLoaded(true);
   }, []);
 
@@ -503,6 +515,35 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   <p className="text-zinc-700 dark:text-zinc-300">{f.subject}</p>
                   {f.waiting_for && <p className="text-xs text-zinc-400">รอ: {f.waiting_for}</p>}
                 </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card
+        title="บันทึกล่าสุด"
+        icon={<NotePencil weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+      >
+        {memories.length === 0 ? (
+          <p className="text-sm text-zinc-400">ยังไม่มีบันทึก — พิมพ์หรือส่งอะไรก็ได้ โฮชิจะจดให้อัตโนมัติ</p>
+        ) : (
+          <ul className="space-y-3">
+            {memories.map((m) => (
+              <li key={m.id} className="text-sm">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <p className="text-xs text-zinc-400">{fmtDate(m.created_at)}</p>
+                  {(m.tags ?? []).length > 0 && (
+                    <div className="flex gap-1">
+                      {m.tags!.slice(0, 3).map((t) => (
+                        <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                          #{t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <p className="text-zinc-700 dark:text-zinc-300 line-clamp-3 whitespace-pre-line">{m.content}</p>
               </li>
             ))}
           </ul>
