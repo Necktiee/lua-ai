@@ -42,7 +42,11 @@ export async function embed(
     try {
       const client = getClient(cfg.baseURL, cfg.keys[keyIdx]);
       const controller = new AbortController();
-      const timeoutMs = 60_000;
+      // 20s, not 60s — embedOne runs on the hot path (buildAgentContext, every
+      // chat turn) inside Promise.all. bge-m3 normally replies in <1s; if it
+      // hangs, callers degrade to ILIKE text fallback, so a tight bound here
+      // keeps the reply latency bounded (was 60s → user waited 60s+30s chat).
+      const timeoutMs = 20_000;
       const t = setTimeout(() => controller.abort(), timeoutMs);
       let res;
       try {

@@ -16,12 +16,14 @@ export async function upsertPerson(args: {
   await touchUser(args.userId);
   const safeName = escapePostgresString(args.name);
 
-  // exact name match first, then partial (e.g. "John" → "John Doe")
+  // exact name match first, then partial (e.g. "John" → "John Doe").
+  // limit(1) so duplicate names don't make maybeSingle() error (>1 row).
   const { data: byExact } = await db
     .from("people")
     .select("*")
     .eq("user_id", args.userId)
     .ilike("name", safeName)
+    .limit(1)
     .maybeSingle();
 
   let existing = byExact as Person | null;
