@@ -110,13 +110,12 @@ export async function chat({
           markCooldown(cfg.name, keyIdx, status === 429 || status === 403 ? 60_000 : 15_000);
           continue;
         }
-        // 4xx อื่น = คำขอผิด → throw ทันที ไม่ waste keys
+        // 4xx อื่น (เช่น 400) = provider นี้ปฏิเสธคำขอ
+        // ยิง key อื่นของ provider เดิมก็ 400 ซ้ำ → ข้ามทั้ง provider
+        // แล้วไป fallback provider ถัดไป (อย่า throw ทันที ไม่งั้น mistral ไม่ได้ทำงาน)
         if (status && status >= 400 && status < 500) {
-          throw new LLMError(
-            `bad request (${status}) from ${cfg.name}: ${(err as Error).message}`,
-            "bad_response",
-            err,
-          );
+          markCooldown(cfg.name, keyIdx, 30_000);
+          break;
         }
         // timeout/network → ลอง key ถัดไป
         markCooldown(cfg.name, keyIdx, 15_000);
