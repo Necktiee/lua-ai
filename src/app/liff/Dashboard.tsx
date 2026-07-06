@@ -1,22 +1,26 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  CheckCircle,
-  Circle,
-  Plus,
-  ListChecks,
-  CalendarBlank,
-  Wallet,
-  Target,
-  Clock,
+  ArrowClockwise,
   BookOpen,
-  ChatCircleDots,
-  GoogleLogo,
-  Gear,
+  CalendarBlank,
   ChartBar,
+  ChatCircleDots,
+  CheckCircle,
   ClipboardText,
+  Clock,
+  Gear,
+  GoogleLogo,
+  House,
+  ListChecks,
   NotePencil,
+  Plus,
+  Sparkle,
+  Target,
+  Trash,
+  Wallet,
+  WarningCircle,
 } from "@phosphor-icons/react";
 
 interface Profile {
@@ -132,6 +136,25 @@ interface UsageData {
   error?: string;
 }
 
+type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "system";
+
+const NAV_ITEMS: Array<{
+  id: PageId;
+  label: string;
+  short: string;
+  icon: (className: string) => React.ReactNode;
+}> = [
+  { id: "overview", label: "ภาพรวม", short: "รวม", icon: (c) => <House weight="fill" className={c} /> },
+  { id: "tasks", label: "งาน", short: "งาน", icon: (c) => <ListChecks weight="fill" className={c} /> },
+  { id: "calendar", label: "เวลา", short: "เวลา", icon: (c) => <CalendarBlank weight="fill" className={c} /> },
+  { id: "finance", label: "เงิน", short: "เงิน", icon: (c) => <Wallet weight="fill" className={c} /> },
+  { id: "goals", label: "เป้าหมาย", short: "เป้า", icon: (c) => <Target weight="fill" className={c} /> },
+  { id: "memory", label: "บันทึก", short: "จำ", icon: (c) => <NotePencil weight="fill" className={c} /> },
+  { id: "system", label: "ระบบ", short: "ระบบ", icon: (c) => <Gear weight="fill" className={c} /> },
+];
+
+const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 });
+
 function fmtDate(iso?: string | null) {
   if (!iso) return "";
   try {
@@ -147,6 +170,37 @@ function fmtDate(iso?: string | null) {
   }
 }
 
+function fmtDay(iso?: string | null) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString("th-TH", {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      timeZone: "Asia/Bangkok",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function goalPct(goal: Goal) {
+  if (!goal.target_value) return 0;
+  return Math.min(100, Math.round((goal.current_value / goal.target_value) * 100));
+}
+
+function pageFromHash(): PageId {
+  if (typeof window === "undefined") return "overview";
+  const value = window.location.hash.replace("#", "") as PageId;
+  return NAV_ITEMS.some((item) => item.id === value) ? value : "overview";
+}
+
+function PriorityDot({ p }: { p: 1 | 2 | 3 }) {
+  const cls = p === 1 ? "bg-red-500" : p === 3 ? "bg-zinc-300 dark:bg-zinc-600" : "bg-amber-500";
+  const label = p === 1 ? "ด่วน" : p === 3 ? "ไม่รีบ" : "ปกติ";
+  return <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full ${cls}`} title={label} aria-label={label} />;
+}
+
 function Pill({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span
@@ -156,55 +210,74 @@ function Pill({ ok, label }: { ok: boolean; label: string }) {
           : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
       }`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full ${ok ? "bg-emerald-500" : "bg-zinc-400"}`} />
+      <span className={`h-1.5 w-1.5 rounded-full ${ok ? "bg-emerald-500" : "bg-zinc-400"}`} />
       {label}
     </span>
   );
 }
 
-function Card({
-  title,
-  icon,
-  children,
-}: {
-  title: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function Card({ title, icon, children, className = "" }: { title?: string; icon?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <section className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-100 dark:border-zinc-800 p-5">
-      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-3">
-        {icon}
-        {title}
-      </h2>
+    <section className={`rounded-[1.6rem] border border-zinc-200/70 bg-white/85 p-5 shadow-sm shadow-zinc-200/50 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80 dark:shadow-black/20 ${className}`}>
+      {title && (
+        <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+          {icon}
+          {title}
+        </h2>
+      )}
       {children}
     </section>
   );
 }
 
-function PriorityDot({ p }: { p: 1 | 2 | 3 }) {
-  const cls = p === 1 ? "bg-red-500" : p === 3 ? "bg-zinc-300 dark:bg-zinc-600" : "bg-amber-500";
-  const label = p === 1 ? "ด่วน" : p === 3 ? "ไม่รีบ" : "ปกติ";
-  return <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${cls}`} title={label} aria-label={label} />;
+function StatTile({ label, value, hint, tone = "zinc" }: { label: string; value: string; hint: string; tone?: "zinc" | "emerald" | "amber" | "red" }) {
+  const toneClass = {
+    zinc: "text-zinc-900 dark:text-zinc-50",
+    emerald: "text-emerald-700 dark:text-emerald-300",
+    amber: "text-amber-700 dark:text-amber-300",
+    red: "text-red-700 dark:text-red-300",
+  }[tone];
+  return (
+    <div className="rounded-2xl border border-zinc-200/70 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">{label}</p>
+      <p className={`mt-1 text-2xl font-semibold tracking-tight ${toneClass}`}>{value}</p>
+      <p className="mt-1 text-xs text-zinc-400">{hint}</p>
+    </div>
+  );
+}
+
+function EmptyState({ title, hint, icon }: { title: string; hint: string; icon: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-zinc-200 bg-zinc-50/80 p-6 text-center dark:border-zinc-800 dark:bg-zinc-950/40">
+      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white text-zinc-400 shadow-sm dark:bg-zinc-900">{icon}</div>
+      <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{title}</p>
+      <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{hint}</p>
+    </div>
+  );
+}
+
+function CommandHint({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-emerald-200/70 bg-emerald-50/70 p-4 text-sm text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/25 dark:text-emerald-200">
+      <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+        <Sparkle weight="fill" className="h-3.5 w-3.5" />
+        สั่งผ่าน LINE ได้
+      </p>
+      <p className="leading-6">{children}</p>
+    </div>
+  );
 }
 
 function CardSkeleton() {
   return (
-    <section className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-100 dark:border-zinc-800 p-5 space-y-3">
-      <div className="h-3.5 w-24 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
-      <div className="h-3 w-full rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
-      <div className="h-3 w-4/5 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+    <section className="rounded-[1.6rem] border border-zinc-200/70 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="h-3.5 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+      <div className="mt-4 h-3 w-full animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+      <div className="mt-2 h-3 w-4/5 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
     </section>
   );
 }
 
-/**
- * Fetch JSON with a per-call fallback. A single endpoint failing (network
- * error, non-JSON 500 error page, etc.) must NOT blank the whole dashboard —
- * previously load() used Promise.all over 11 bare fetches, so one rejection
- * left setLoaded(true) unreachable and the dashboard stuck on skeletons
- * forever. Each safeFetch degrades independently.
- */
 async function safeFetch<T>(url: string, fallback: T): Promise<T> {
   try {
     const r = await fetch(url);
@@ -216,6 +289,7 @@ async function safeFetch<T>(url: string, fallback: T): Promise<T> {
 }
 
 export default function Dashboard({ profile }: { profile: Profile }) {
+  const [activePage, setActivePage] = useState<PageId>(() => pageFromHash());
   const [statusData, setStatusData] = useState<StatusData | null>(null);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [events, setEvents] = useState<CalEvent[]>([]);
@@ -232,21 +306,27 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [memories, setMemories] = useState<MemoryNote[]>([]);
   const [newTodo, setNewTodo] = useState("");
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
+
+  const loadTodos = useCallback(async () => {
+    const res = await safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] });
+    setTodos(res.todos ?? []);
+  }, []);
 
   const load = useCallback(async () => {
     const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes] = await Promise.all([
       safeFetch<StatusData | null>("/api/dashboard/status", null),
       safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
-      safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=7", {}),
+      safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=14", {}),
       safeFetch<{ expenses?: Expense[]; summary?: ExpenseSummary | null; subscriptions?: Subscription[] }>("/api/dashboard/expenses", {}),
       safeFetch<{ goals: Goal[] }>("/api/dashboard/goals", { goals: [] }),
-      safeFetch<{ entries: JournalEntry[] }>("/api/dashboard/journal?limit=5", { entries: [] }),
+      safeFetch<{ entries: JournalEntry[] }>("/api/dashboard/journal?limit=14", { entries: [] }),
       safeFetch<{ followUps: FollowUp[] }>("/api/dashboard/followups", { followUps: [] }),
-      safeFetch<{ messages: Msg[] }>("/api/dashboard/messages?limit=20", { messages: [] }),
+      safeFetch<{ messages: Msg[] }>("/api/dashboard/messages?limit=40", { messages: [] }),
       safeFetch<UsageData | null>("/api/dashboard/usage", null),
       safeFetch<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
-      safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=20", { memories: [] }),
+      safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=40", { memories: [] }),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -266,8 +346,39 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   }, []);
 
   useEffect(() => {
-    load().catch((e) => console.error("[dashboard] load failed", e));
+    const onHash = () => setActivePage(pageFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      load().catch((e) => console.error("[dashboard] load failed", e));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadTodos().catch((e) => console.error("[dashboard] todo sync failed", e));
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadTodos]);
+
+  async function refresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function go(page: PageId) {
+    setActivePage(page);
+    window.history.replaceState(null, "", `#${page}`);
+  }
 
   async function addTodo() {
     if (!newTodo.trim() || busy) return;
@@ -279,384 +390,644 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         body: JSON.stringify({ title: newTodo.trim() }),
       });
       setNewTodo("");
-      const r = await fetch("/api/dashboard/todos?filter=pending").then((x) => x.json());
-      setTodos(r.todos ?? []);
+      await loadTodos();
     } finally {
       setBusy(false);
     }
   }
 
   async function completeTodo(id: string) {
+    const previous = todos;
     setTodos((prev) => prev.filter((t) => t.id !== id));
-    await fetch("/api/dashboard/todos", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, status: "done" }),
-    });
+    try {
+      const r = await fetch("/api/dashboard/todos", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, status: "done" }),
+      });
+      if (!r.ok) throw new Error("complete failed");
+    } catch {
+      setTodos(previous);
+    }
+  }
+
+  async function deleteTodo(id: string) {
+    const target = todos.find((t) => t.id === id);
+    if (!target || !window.confirm(`ลบงาน "${target.title}" ถาวร?`)) return;
+
+    const previous = todos;
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/todos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("delete failed");
+    } catch {
+      setTodos(previous);
+    }
   }
 
   async function closeFollowUp(id: string) {
+    const previous = followUps;
     setFollowUps((prev) => prev.filter((f) => f.id !== id));
-    await fetch("/api/dashboard/followups", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
+    try {
+      const r = await fetch("/api/dashboard/followups", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!r.ok) throw new Error("close follow-up failed");
+    } catch {
+      setFollowUps(previous);
+    }
   }
 
   const connectGoogle = () => {
     window.location.href = "/api/dashboard/google/connect";
   };
 
+  const urgentTodos = todos.filter((t) => t.priority === 1);
+  const normalTodos = todos.filter((t) => t.priority === 2);
+  const lowTodos = todos.filter((t) => t.priority === 3);
+  const nextEvent = events[0];
+  const categoryRows = Object.entries(expSummary?.byCategory ?? {}).sort((a, b) => b[1] - a[1]);
+  const maxCategory = Math.max(1, ...categoryRows.map(([, value]) => value));
+  const avgGoal = goals.length ? Math.round(goals.reduce((sum, goal) => sum + goalPct(goal), 0) / goals.length) : 0;
+  const providerRows = Object.entries(usage?.summary.byProvider ?? {}).sort((a, b) => b[1].totalTokens - a[1].totalTokens);
+  const maxProviderTokens = Math.max(1, ...providerRows.map(([, value]) => value.totalTokens));
+
   if (!loaded) {
     return (
-      <div className="w-full max-w-2xl mx-auto space-y-4 p-4 pb-16">
+      <div className="mx-auto w-full max-w-6xl space-y-4 p-4 pb-20 md:p-6">
         <div className="flex items-center gap-3 py-2">
-          <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+          <div className="h-11 w-11 animate-pulse rounded-full bg-zinc-100 dark:bg-zinc-800" />
           <div className="space-y-1.5">
-            <div className="h-3.5 w-28 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
-            <div className="h-3 w-20 rounded bg-zinc-100 dark:bg-zinc-800 animate-pulse" />
+            <div className="h-3.5 w-32 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+            <div className="h-3 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
           </div>
         </div>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <CardSkeleton key={i} />
-        ))}
+        <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
+          <CardSkeleton />
+          <div className="grid gap-4 md:grid-cols-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <CardSkeleton key={i} />
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-4 p-4 pb-16">
-      <div className="flex items-center gap-3 py-2">
-        {profile.pictureUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={profile.pictureUrl} alt={profile.displayName} className="w-10 h-10 rounded-full" />
-        )}
-        <div>
-          <p className="font-semibold text-zinc-900 dark:text-zinc-100">{profile.displayName}</p>
-          <p className="text-xs text-zinc-400">โฮชิ Dashboard</p>
+    <div className="min-h-[100dvh] bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34rem),linear-gradient(180deg,#fafafa,transparent_20rem)] dark:bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_32rem),linear-gradient(180deg,#09090b,transparent_22rem)]">
+      <div className="mx-auto w-full max-w-6xl px-4 py-4 pb-24 md:px-6 lg:pb-10">
+        <header className="mb-4 flex items-center justify-between gap-3 rounded-[1.6rem] border border-zinc-200/70 bg-white/80 p-3 shadow-sm shadow-zinc-200/50 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/75 dark:shadow-black/20">
+          <div className="flex min-w-0 items-center gap-3">
+            {profile.pictureUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={profile.pictureUrl} alt={profile.displayName} className="h-11 w-11 rounded-full object-cover" />
+            ) : (
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                <Sparkle weight="fill" className="h-5 w-5" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">{profile.displayName}</p>
+              <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">โฮชิ Dashboard · {NAV_ITEMS.find((item) => item.id === activePage)?.label}</p>
+            </div>
+          </div>
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 shadow-sm transition active:scale-[0.98] disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
+          >
+            <ArrowClockwise className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            รีเฟรช
+          </button>
+        </header>
+
+        <div className="grid gap-4 lg:grid-cols-[224px_1fr] lg:items-start">
+          <aside className="hidden lg:sticky lg:top-4 lg:block">
+            <nav className="rounded-[1.6rem] border border-zinc-200/70 bg-white/80 p-2 shadow-sm shadow-zinc-200/50 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/75 dark:shadow-black/20">
+              {NAV_ITEMS.map((item) => {
+                const active = item.id === activePage;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => go(item.id)}
+                    className={`mb-1 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left text-sm font-medium transition active:scale-[0.99] ${
+                      active
+                        ? "bg-zinc-950 text-white shadow-sm dark:bg-zinc-50 dark:text-zinc-950"
+                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    }`}
+                  >
+                    {item.icon("h-4 w-4")}
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+
+          <main className="space-y-4">
+            {activePage === "overview" && (
+              <>
+                <section className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
+                  <Card className="overflow-hidden bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                    <div className="flex h-full flex-col justify-between gap-8">
+                      <div>
+                        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300 dark:text-emerald-700">Command center</p>
+                        <h1 className="max-w-xl text-3xl font-semibold leading-tight tracking-tight md:text-5xl">วันนี้ต้องเคลียร์อะไร ดูได้ในหน้าเดียว</h1>
+                        <p className="mt-4 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">รวมงานด่วน นัดถัดไป เงินเดือนนี้ เป้าหมาย และสิ่งที่รอคนอื่นตอบ เพื่อให้เริ่มวันได้เร็วขึ้น</p>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        <button onClick={() => go("tasks")} className="rounded-2xl bg-white/10 px-4 py-3 text-left text-sm transition hover:bg-white/15 active:scale-[0.98] dark:bg-zinc-950/10 dark:hover:bg-zinc-950/15">
+                          งานค้าง <span className="block text-2xl font-semibold">{todos.length}</span>
+                        </button>
+                        <button onClick={() => go("calendar")} className="rounded-2xl bg-white/10 px-4 py-3 text-left text-sm transition hover:bg-white/15 active:scale-[0.98] dark:bg-zinc-950/10 dark:hover:bg-zinc-950/15">
+                          นัดถัดไป <span className="block truncate text-2xl font-semibold">{nextEvent ? fmtDay(nextEvent.start) : "ว่าง"}</span>
+                        </button>
+                        <button onClick={() => go("goals")} className="rounded-2xl bg-white/10 px-4 py-3 text-left text-sm transition hover:bg-white/15 active:scale-[0.98] dark:bg-zinc-950/10 dark:hover:bg-zinc-950/15">
+                          เป้าหมาย <span className="block text-2xl font-semibold">{avgGoal}%</span>
+                        </button>
+                      </div>
+                    </div>
+                  </Card>
+                  <Card title="สุขภาพวันนี้" icon={<Sparkle weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    <div className="space-y-3">
+                      <StatTile label="งานด่วน" value={String(urgentTodos.length)} hint="ควรจัดก่อนอย่างอื่น" tone={urgentTodos.length ? "red" : "emerald"} />
+                      <StatTile label="รอคำตอบ" value={String(followUps.length)} hint="ของที่ไม่ควรหลุดมือ" tone={followUps.length ? "amber" : "emerald"} />
+                      <StatTile label="ใช้ AI 7 วัน" value={(usage?.summary.totalCalls ?? 0).toLocaleString("th-TH")} hint={`${money.format(usage?.summary.totalTokens ?? 0)} tokens`} />
+                    </div>
+                  </Card>
+                </section>
+
+                <section className="grid gap-4 xl:grid-cols-3">
+                  <Card title="คิวโฟกัส" icon={<ListChecks weight="fill" className="h-4 w-4 text-emerald-500" />} className="xl:col-span-2">
+                    {todos.length === 0 && followUps.length === 0 ? (
+                      <EmptyState title="วันนี้ดูโล่ง" hint="ถ้ามีงานใหม่ พิมพ์ใน LINE หรือเพิ่มจากหน้างานได้เลย" icon={<CheckCircle weight="fill" className="h-5 w-5" />} />
+                    ) : (
+                      <div className="space-y-3">
+                        {[...urgentTodos, ...normalTodos].slice(0, 5).map((todo) => (
+                          <div key={todo.id} className="flex items-center gap-3 rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                            <button onClick={() => completeTodo(todo.id)} className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-300 text-zinc-400 transition hover:border-emerald-400 hover:text-emerald-500 dark:border-zinc-700" aria-label="complete todo">
+                              <CheckCircle className="h-4 w-4" />
+                            </button>
+                            <PriorityDot p={todo.priority} />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">{todo.title}</p>
+                              {todo.due_at && <p className="text-xs text-zinc-400">ครบกำหนด {fmtDate(todo.due_at)}</p>}
+                            </div>
+                          </div>
+                        ))}
+                        {followUps.slice(0, 3).map((item) => (
+                          <div key={item.id} className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+                            <Clock weight="fill" className="h-4 w-4 flex-shrink-0 text-amber-600" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">{item.subject}</p>
+                              <p className="text-xs text-zinc-500 dark:text-zinc-400">{item.waiting_for ? `รอ ${item.waiting_for}` : "รอคำตอบ"}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                  <Card title="ถัดไปในเวลา" icon={<CalendarBlank weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {nextEvent ? (
+                      <div className="space-y-3">
+                        <p className="text-xs text-zinc-400">นัดถัดไป</p>
+                        <p className="text-xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">{nextEvent.summary}</p>
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400">{fmtDate(nextEvent.start)}{nextEvent.location ? ` · ${nextEvent.location}` : ""}</p>
+                        <button onClick={() => go("calendar")} className="rounded-full bg-zinc-950 px-4 py-2 text-xs font-medium text-white transition active:scale-[0.98] dark:bg-zinc-50 dark:text-zinc-950">ดูตารางเวลา</button>
+                      </div>
+                    ) : (
+                      <EmptyState title="ยังไม่มีนัด" hint="เชื่อม Google Calendar แล้วนัดจะขึ้นที่นี่" icon={<CalendarBlank className="h-5 w-5" />} />
+                    )}
+                  </Card>
+                </section>
+              </>
+            )}
+
+            {activePage === "tasks" && (
+              <>
+                <Card className="bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                  <div className="grid gap-4 lg:grid-cols-[1fr_320px] lg:items-end">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300 dark:text-emerald-700">Task desk</p>
+                      <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">งานต้องจัด ไม่ใช่แค่ลิสต์</h1>
+                      <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">แยกด่วน ปกติ ไม่รีบ พร้อมปิดงาน ลบงาน และติดตามงานที่รอคนอื่นตอบจากหน้าเดียว</p>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <StatTile label="ด่วน" value={String(urgentTodos.length)} hint="priority 1" tone={urgentTodos.length ? "red" : "emerald"} />
+                      <StatTile label="ปกติ" value={String(normalTodos.length)} hint="priority 2" />
+                      <StatTile label="ไม่รีบ" value={String(lowTodos.length)} hint="priority 3" />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card>
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <input
+                      value={newTodo}
+                      onChange={(e) => setNewTodo(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addTodo()}
+                      placeholder="เพิ่มงานใหม่ เช่น โทรหาแม่ พรุ่งนี้ 10 โมง"
+                      className="min-h-12 flex-1 rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:ring-emerald-950"
+                    />
+                    <button onClick={addTodo} disabled={busy} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-zinc-950 px-5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-950">
+                      <Plus weight="bold" className="h-4 w-4" />
+                      เพิ่มงาน
+                    </button>
+                  </div>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-3">
+                  {[
+                    { title: "ด่วน", rows: urgentTodos, tone: "border-red-200 dark:border-red-900/60" },
+                    { title: "ปกติ", rows: normalTodos, tone: "border-amber-200 dark:border-amber-900/60" },
+                    { title: "ไม่รีบ", rows: lowTodos, tone: "border-zinc-200 dark:border-zinc-800" },
+                  ].map((lane) => (
+                    <Card key={lane.title} title={`${lane.title} (${lane.rows.length})`} className={lane.tone}>
+                      {lane.rows.length === 0 ? (
+                        <p className="text-sm text-zinc-400">ไม่มีงานในช่องนี้</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {lane.rows.map((todo) => (
+                            <li key={todo.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                              <div className="flex items-start gap-3">
+                                <button onClick={() => completeTodo(todo.id)} className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-300 text-zinc-400 transition hover:border-emerald-400 hover:text-emerald-500 dark:border-zinc-700" aria-label="complete todo">
+                                  <CheckCircle className="h-4 w-4" />
+                                </button>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium leading-5 text-zinc-800 dark:text-zinc-100">{todo.title}</p>
+                                  {todo.due_at && <p className="mt-1 text-xs text-zinc-400">{fmtDate(todo.due_at)}</p>}
+                                </div>
+                                <button onClick={() => deleteTodo(todo.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete todo">
+                                  <Trash className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+                  <Card title={`งานรอคำตอบ (${followUps.length})`} icon={<Clock weight="fill" className="h-4 w-4 text-amber-500" />}>
+                    {followUps.length === 0 ? (
+                      <EmptyState title="ไม่มีงานค้างฝั่งคนอื่น" hint="ถ้าต้องรอใคร ส่งว่า 'รอคุณ A ส่งไฟล์ศุกร์นี้'" icon={<Clock className="h-5 w-5" />} />
+                    ) : (
+                      <ul className="space-y-2">
+                        {followUps.map((item) => (
+                          <li key={item.id} className="flex items-start gap-3 rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                            <button onClick={() => closeFollowUp(item.id)} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300">ปิด</button>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{item.subject}</p>
+                              <p className="text-xs text-zinc-400">{item.waiting_for ? `รอ: ${item.waiting_for}` : "รอคำตอบ"}{item.deadline ? ` · ${fmtDate(item.deadline)}` : ""}</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Card>
+                  <CommandHint>เพิ่มงาน: “เตือนทำรายงานพรุ่งนี้ 9 โมง” · แก้: “แก้งานที่ 2 เป็น...” · ลบ: “ลบงานที่ 2” · ติดตาม: “รอคุณ A ส่งไฟล์ศุกร์นี้”</CommandHint>
+                </div>
+              </>
+            )}
+
+            {activePage === "calendar" && (
+              <>
+                <Card className="bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/25 dark:to-zinc-900">
+                  <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300">Time map</p>
+                      <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">ตารางเวลา 14 วัน</h1>
+                      <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ดูนัดที่กำลังจะมา สถานะ Google และสรุปประชุมล่าสุด เพื่อเตรียมตัวก่อนถึงเวลา</p>
+                    </div>
+                    {statusData && !statusData.google.connected && (
+                      <button onClick={connectGoogle} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-950 px-4 py-3 text-sm font-medium text-white transition active:scale-[0.98] dark:bg-zinc-50 dark:text-zinc-950">
+                        <GoogleLogo weight="bold" className="h-4 w-4" />
+                        เชื่อม Google
+                      </button>
+                    )}
+                  </div>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+                  <Card title="ไทม์ไลน์" icon={<CalendarBlank weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {calError ? (
+                      <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-950/25 dark:text-amber-200">{calError}</div>
+                    ) : events.length === 0 ? (
+                      <EmptyState title="ยังไม่มีนัด" hint="นัดจาก Google Calendar จะขึ้นที่นี่อัตโนมัติ" icon={<CalendarBlank className="h-5 w-5" />} />
+                    ) : (
+                      <ol className="space-y-3">
+                        {events.map((event) => (
+                          <li key={event.id} className="grid gap-3 rounded-2xl border border-zinc-100 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950/45 sm:grid-cols-[120px_1fr]">
+                            <div className="text-xs font-medium text-emerald-700 dark:text-emerald-300">{fmtDay(event.start)}<span className="block text-zinc-400">{fmtDate(event.start).split(" ").slice(-1)[0]}</span></div>
+                            <div>
+                              <p className="font-medium text-zinc-900 dark:text-zinc-100">{event.summary}</p>
+                              <p className="mt-1 text-xs text-zinc-400">{event.location || "ไม่มีสถานที่"}</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </Card>
+                  <div className="space-y-4">
+                    <Card title={`สรุปประชุม (${meetings.length})`} icon={<ClipboardText weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                      {meetings.length === 0 ? (
+                        <p className="text-sm text-zinc-400">ยังไม่มีบันทึกประชุม</p>
+                      ) : (
+                        <ul className="space-y-3">
+                          {meetings.slice(0, 5).map((meeting) => (
+                            <li key={meeting.id} className="text-sm">
+                              <p className="mb-1 text-xs text-zinc-400">{fmtDate(meeting.created_at)}</p>
+                              <p className="line-clamp-4 whitespace-pre-line text-zinc-700 dark:text-zinc-300">{meeting.content}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+                    <CommandHint>ก่อนประชุมพิมพ์ “สรุปประชุมวันนี้” หรือส่งโน้ตประชุมมา โฮชิจะจัดเก็บและดึงมาให้ในหน้าปฏิทิน</CommandHint>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activePage === "finance" && (
+              <>
+                <Card className="bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                  <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300 dark:text-emerald-700">Money room</p>
+                      <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">{money.format(expSummary?.total ?? 0)} บาท</h1>
+                      <p className="mt-3 text-sm text-zinc-300 dark:text-zinc-600">ค่าใช้จ่ายเดือนนี้ · {expSummary?.count ?? 0} รายการ · subscription {subs.length} รายการ</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <StatTile label="รายการล่าสุด" value={String(expenses.length)} hint="แสดง 30 รายการ" />
+                      <StatTile label="หมวดสูงสุด" value={categoryRows[0]?.[0] ?? "-"} hint={categoryRows[0] ? `${money.format(categoryRows[0][1])} บาท` : "ยังไม่มี"} />
+                    </div>
+                  </div>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+                  <Card title="สัดส่วนหมวด" icon={<ChartBar weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {categoryRows.length === 0 ? (
+                      <EmptyState title="ยังไม่มีค่าใช้จ่าย" hint="พิมพ์ใน LINE เช่น 'ซื้อกาแฟ 85' แล้วหมวดจะขึ้นที่นี่" icon={<Wallet className="h-5 w-5" />} />
+                    ) : (
+                      <div className="space-y-3">
+                        {categoryRows.map(([cat, amount]) => (
+                          <div key={cat}>
+                            <div className="mb-1 flex justify-between text-sm">
+                              <span className="font-medium text-zinc-700 dark:text-zinc-300">{cat}</span>
+                              <span className="text-zinc-500">{money.format(amount)} บาท</span>
+                            </div>
+                            <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800">
+                              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(4, Math.round((amount / maxCategory) * 100))}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                  <Card title="Subscriptions" icon={<Wallet weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {subs.length === 0 ? (
+                      <p className="text-sm text-zinc-400">ยังไม่มี subscription</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {subs.map((sub) => (
+                          <li key={sub.id} className="flex items-center justify-between rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
+                            <span className="font-medium text-zinc-800 dark:text-zinc-100">{sub.name}</span>
+                            <span className="text-zinc-500">{money.format(sub.amount)} {sub.currency}/{sub.billing_cycle}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Card>
+                </div>
+
+                <Card title="รายการล่าสุด" icon={<Wallet weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                  {expenses.length === 0 ? (
+                    <p className="text-sm text-zinc-400">ยังไม่มีข้อมูล</p>
+                  ) : (
+                    <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {expenses.map((expense) => (
+                        <li key={expense.id} className="flex items-center justify-between gap-3 py-3 text-sm">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium text-zinc-800 dark:text-zinc-100">{expense.description || expense.category}</p>
+                            <p className="text-xs text-zinc-400">{expense.category} · {fmtDay(expense.expense_date)}</p>
+                          </div>
+                          <p className="font-semibold text-zinc-950 dark:text-zinc-50">{money.format(expense.amount)} {expense.currency}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Card>
+              </>
+            )}
+
+            {activePage === "goals" && (
+              <>
+                <Card className="bg-gradient-to-br from-zinc-950 to-emerald-950 text-white dark:from-zinc-100 dark:to-emerald-100 dark:text-zinc-950">
+                  <div className="grid gap-4 md:grid-cols-[1fr_260px] md:items-end">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300 dark:text-emerald-700">Goal board</p>
+                      <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">{avgGoal}% เฉลี่ย</h1>
+                      <p className="mt-3 max-w-2xl text-sm text-zinc-300 dark:text-zinc-600">ดูความคืบหน้ารายเป้าหมาย แยกตาม period และเห็นทันทีว่าอะไรยังไม่ขยับ</p>
+                    </div>
+                    <StatTile label="เป้าหมาย active" value={String(goals.length)} hint="จาก goal repo" />
+                  </div>
+                </Card>
+
+                {goals.length === 0 ? (
+                  <EmptyState title="ยังไม่มีเป้าหมาย" hint="พิมพ์ใน LINE เช่น 'ตั้งเป้าอ่านหนังสือ 20 หน้า/วัน'" icon={<Target className="h-5 w-5" />} />
+                ) : (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {goals.map((goal) => {
+                      const pct = goalPct(goal);
+                      return (
+                        <Card key={goal.id}>
+                          <div className="mb-4 flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-lg font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">{goal.title}</p>
+                              <p className="text-xs text-zinc-400">{goal.period}</p>
+                            </div>
+                            <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">{pct}%</span>
+                          </div>
+                          <div className="mb-3 h-3 rounded-full bg-zinc-100 dark:bg-zinc-800">
+                            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(3, pct)}%` }} />
+                          </div>
+                          <div className="flex justify-between text-sm text-zinc-500 dark:text-zinc-400">
+                            <span>{goal.current_value} {goal.unit ?? ""}</span>
+                            <span>{goal.target_value ? `${goal.target_value} ${goal.unit ?? ""}` : "ไม่มี target"}</span>
+                          </div>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+                <CommandHint>เพิ่มเป้า: “ตั้งเป้าวิ่ง 5 กม./วัน” · อัปเดต: “วันนี้วิ่ง 3 กม.” โฮชิจะจับคู่กับเป้าหมายให้เอง</CommandHint>
+              </>
+            )}
+
+            {activePage === "memory" && (
+              <>
+                <Card className="bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                  <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">สมองสำรองของโฮชิ</h1>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">แยกความจำทั่วไป ประชุม journal และประวัติแชท เพื่อค้นภาพรวมชีวิตจากสิ่งที่ส่งเข้า LINE</p>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+                  <Card title={`บันทึกล่าสุด (${memories.length})`} icon={<NotePencil weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {memories.length === 0 ? (
+                      <EmptyState title="ยังไม่มีบันทึก" hint="ส่งข้อความ รูป ลิงก์ หรือไฟล์ให้โฮชิจำ แล้วจะขึ้นที่นี่" icon={<NotePencil className="h-5 w-5" />} />
+                    ) : (
+                      <ul className="space-y-3">
+                        {memories.map((memory) => (
+                          <li key={memory.id} className="rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-zinc-400">{fmtDate(memory.created_at)}</span>
+                              {(memory.tags ?? []).slice(0, 4).map((tag) => (
+                                <span key={tag} className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">#{tag}</span>
+                              ))}
+                            </div>
+                            <p className="line-clamp-4 whitespace-pre-line text-zinc-700 dark:text-zinc-300">{memory.content}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Card>
+                  <div className="space-y-4">
+                    <Card title="Journal" icon={<BookOpen weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                      {journal.length === 0 ? (
+                        <p className="text-sm text-zinc-400">ยังไม่มี journal</p>
+                      ) : (
+                        <ul className="space-y-3">
+                          {journal.map((entry) => (
+                            <li key={entry.id} className="text-sm">
+                              <p className="mb-1 text-xs text-zinc-400">{entry.entry_date}</p>
+                              <p className="line-clamp-4 text-zinc-700 dark:text-zinc-300">{entry.content}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+                    <Card title="แชทล่าสุด" icon={<ChatCircleDots weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                      {messages.length === 0 ? (
+                        <p className="text-sm text-zinc-400">ยังไม่มีประวัติ</p>
+                      ) : (
+                        <ul className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                          {messages.slice().reverse().map((message) => (
+                            <li key={message.id} className="rounded-2xl bg-zinc-50 p-3 text-xs dark:bg-zinc-950/45">
+                              <span className={`font-semibold ${message.role === "user" ? "text-zinc-950 dark:text-zinc-50" : "text-emerald-600 dark:text-emerald-300"}`}>{message.role === "user" ? "คุณ" : "โฮชิ"}: </span>
+                              <span className="text-zinc-500">{message.content.slice(0, 180)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activePage === "system" && (
+              <>
+                <Card className="bg-gradient-to-br from-zinc-950 to-zinc-800 text-white dark:from-zinc-100 dark:to-white dark:text-zinc-950">
+                  <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">ระบบพร้อมแค่ไหน</h1>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">ดู integration สำคัญ, Google scopes, usage provider และสัญญาณผิดปกติของ AI pool</p>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+                  <Card title="Integration" icon={<Gear weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {statusData ? (
+                      <>
+                        <div className="mb-4 flex flex-wrap gap-2">
+                          <Pill ok={statusData.status.hasLine} label="LINE" />
+                          <Pill ok={statusData.status.hasSupabase} label="Database" />
+                          <Pill ok={statusData.status.hasQStash} label="QStash" />
+                          <Pill ok={statusData.status.hasWebSearch} label="Web search" />
+                          <Pill ok={statusData.status.hasLiff} label="LIFF" />
+                        </div>
+                        <div className="rounded-2xl bg-zinc-50 p-4 dark:bg-zinc-950/45">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">Google Calendar + Gmail</p>
+                              <p className="text-xs text-zinc-400">{statusData.google.connected ? "เชื่อมต่อแล้ว" : "ยังไม่เชื่อม"}</p>
+                            </div>
+                            {!statusData.google.connected && (
+                              <button onClick={connectGoogle} className="inline-flex items-center gap-1.5 rounded-full bg-zinc-950 px-3 py-2 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950">
+                                <GoogleLogo weight="bold" className="h-3.5 w-3.5" />
+                                เชื่อม
+                              </button>
+                            )}
+                          </div>
+                          {statusData.google.connected && (
+                            <p className="mt-2 text-xs text-zinc-400">{statusData.google.hasCalendar ? "Calendar" : ""}{statusData.google.hasCalendar && statusData.google.hasGmail ? " · " : ""}{statusData.google.hasGmail ? "Gmail" : ""}</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-sm text-zinc-400">โหลดสถานะไม่สำเร็จ</p>
+                    )}
+                  </Card>
+                  <Card title="AI usage 7 วัน" icon={<ChartBar weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {!usage || usage.error || usage.summary.totalCalls === 0 ? (
+                      <EmptyState title="ยังไม่มี usage" hint="เมื่อมีการเรียก LLM จะเห็น provider และ token ที่นี่" icon={<ChartBar className="h-5 w-5" />} />
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <StatTile label="calls" value={usage.summary.totalCalls.toLocaleString("th-TH")} hint="7 วันล่าสุด" />
+                          <StatTile label="tokens" value={money.format(usage.summary.totalTokens)} hint="รวมทุก provider" />
+                        </div>
+                        <div className="space-y-3">
+                          {providerRows.map(([provider, stat]) => (
+                            <div key={provider}>
+                              <div className="mb-1 flex justify-between text-sm">
+                                <span className="font-medium text-zinc-800 dark:text-zinc-100">{provider}</span>
+                                <span className="text-zinc-500">{stat.calls} calls · ~{stat.avgElapsedMs}ms</span>
+                              </div>
+                              <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800">
+                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(4, Math.round((stat.totalTokens / maxProviderTokens) * 100))}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </Card>
+                </div>
+                {usage?.recent && usage.recent.length > 0 && (
+                  <Card title="Recent model calls" icon={<WarningCircle weight="fill" className="h-4 w-4 text-zinc-400" />}>
+                    <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {usage.recent.slice(0, 12).map((row, index) => (
+                        <li key={`${row.provider}-${row.model}-${row.created_at}-${index}`} className="flex items-center justify-between gap-3 py-3 text-xs">
+                          <span className="min-w-0 truncate text-zinc-700 dark:text-zinc-300">{row.provider} · {row.model}</span>
+                          <span className="flex-shrink-0 text-zinc-400">{money.format(row.total_tokens)} tokens · {fmtDate(row.created_at)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+              </>
+            )}
+          </main>
         </div>
       </div>
 
-      {statusData && (
-        <Card title="สถานะระบบ" icon={<Gear weight="fill" className="w-4 h-4 text-zinc-400" />}>
-          <div className="flex flex-wrap gap-2 mb-3">
-            <Pill ok={statusData.status.hasLine} label="LINE" />
-            <Pill ok={statusData.status.hasSupabase} label="Database" />
-            <Pill ok={statusData.status.hasQStash} label="QStash" />
-            <Pill ok={statusData.status.hasWebSearch} label="Web search" />
-            <Pill ok={statusData.status.hasLiff} label="LIFF" />
-          </div>
-          <div className="flex items-center justify-between border-t border-zinc-100 dark:border-zinc-800 pt-3">
-            <div className="text-sm">
-              <p className="text-zinc-700 dark:text-zinc-300">
-                Google Calendar + Gmail:{" "}
-                <span className={statusData.google.connected ? "text-emerald-600" : "text-zinc-400"}>
-                  {statusData.google.connected ? "เชื่อมต่อแล้ว" : "ยังไม่เชื่อม"}
-                </span>
-              </p>
-              {statusData.google.connected && (
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  {statusData.google.hasCalendar ? "✓ Calendar" : ""}{" "}
-                  {statusData.google.hasGmail ? "✓ Gmail" : ""}
-                </p>
-              )}
-            </div>
-            {!statusData.google.connected && (
-              <button
-                onClick={connectGoogle}
-                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 whitespace-nowrap"
-              >
-                <GoogleLogo weight="bold" className="w-3.5 h-3.5" />
-                เชื่อม Google
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90 lg:hidden">
+        <div className="mx-auto grid max-w-2xl grid-cols-7 gap-1">
+          {NAV_ITEMS.map((item) => {
+            const active = item.id === activePage;
+            return (
+              <button key={item.id} onClick={() => go(item.id)} className={`flex flex-col items-center gap-1 rounded-2xl px-1 py-2 text-[10px] font-medium transition active:scale-[0.96] ${active ? "bg-zinc-950 text-white dark:bg-zinc-50 dark:text-zinc-950" : "text-zinc-500"}`}>
+                {item.icon("h-4 w-4")}
+                {item.short}
               </button>
-            )}
-          </div>
-        </Card>
-      )}
-
-      <Card
-        title={`งานค้าง (${todos.length})`}
-        icon={<ListChecks weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        <div className="flex gap-2 mb-3">
-          <input
-            value={newTodo}
-            onChange={(e) => setNewTodo(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addTodo()}
-            placeholder="เพิ่มงานใหม่..."
-            className="flex-1 text-sm px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-transparent"
-          />
-          <button
-            onClick={addTodo}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-sm px-3 py-2 rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 disabled:opacity-50"
-          >
-            <Plus weight="bold" className="w-3.5 h-3.5" />
-            เพิ่ม
-          </button>
+            );
+          })}
         </div>
-        {todos.length === 0 ? (
-          <p className="text-sm text-zinc-400">ไม่มีงานค้าง</p>
-        ) : (
-          <ul className="space-y-1.5">
-            {todos.map((t) => (
-              <li key={t.id} className="flex items-center gap-2 text-sm">
-                <button
-                  onClick={() => completeTodo(t.id)}
-                  className="w-4 h-4 rounded border border-zinc-300 dark:border-zinc-600 flex-shrink-0"
-                  aria-label="complete"
-                />
-                <PriorityDot p={t.priority} />
-                <span className="flex-1 text-zinc-700 dark:text-zinc-300">{t.title}</span>
-                {t.due_at && <span className="text-xs text-zinc-400">{fmtDate(t.due_at)}</span>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="ปฏิทิน 7 วันข้างหน้า"
-        icon={<CalendarBlank weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {calError ? (
-          <p className="text-sm text-zinc-400">{calError}</p>
-        ) : events.length === 0 ? (
-          <p className="text-sm text-zinc-400">ไม่มีนัด</p>
-        ) : (
-          <ul className="space-y-2">
-            {events.map((e) => (
-              <li key={e.id} className="text-sm">
-                <p className="text-zinc-700 dark:text-zinc-300">{e.summary}</p>
-                <p className="text-xs text-zinc-400">
-                  {fmtDate(e.start)}
-                  {e.location ? ` · ${e.location}` : ""}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="ค่าใช้จ่ายเดือนนี้"
-        icon={<Wallet weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {expSummary && (
-          <p className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-2">
-            {expSummary.total.toLocaleString()} บาท
-            <span className="text-sm text-zinc-400 font-normal ml-2">{expSummary.count} รายการ</span>
-          </p>
-        )}
-        {expSummary && Object.keys(expSummary.byCategory).length > 0 && (
-          <div className="space-y-1 mb-3">
-            {Object.entries(expSummary.byCategory).map(([cat, amt]) => (
-              <div key={cat} className="flex justify-between text-xs text-zinc-500">
-                <span>{cat}</span>
-                <span>{amt.toLocaleString()} บาท</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {expenses.length > 0 && (
-          <ul className="border-t border-zinc-100 dark:border-zinc-800 pt-2 space-y-1">
-            {expenses.slice(0, 5).map((e) => (
-              <li key={e.id} className="flex justify-between text-xs text-zinc-500">
-                <span>{e.description || e.category}</span>
-                <span>{e.amount.toLocaleString()} {e.currency}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {subs.length > 0 && (
-          <div className="border-t border-zinc-100 dark:border-zinc-800 pt-2 mt-2 space-y-1">
-            <p className="text-xs text-zinc-400 mb-1">Subscriptions</p>
-            {subs.map((s) => (
-              <div key={s.id} className="flex justify-between text-xs text-zinc-500">
-                <span>{s.name}</span>
-                <span>{s.amount.toLocaleString()} {s.currency}/{s.billing_cycle}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {expenses.length === 0 && subs.length === 0 && (!expSummary || expSummary.count === 0) && (
-          <p className="text-sm text-zinc-400">ยังไม่มีข้อมูล</p>
-        )}
-      </Card>
-
-      <Card title="เป้าหมาย" icon={<Target weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}>
-        {goals.length === 0 ? (
-          <p className="text-sm text-zinc-400">ยังไม่มีเป้าหมาย</p>
-        ) : (
-          <ul className="space-y-3">
-            {goals.map((g) => {
-              const pct = g.target_value ? Math.min(100, Math.round((g.current_value / g.target_value) * 100)) : 0;
-              return (
-                <li key={g.id}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-zinc-700 dark:text-zinc-300">{g.title}</span>
-                    <span className="text-xs text-zinc-400">
-                      {g.current_value}{g.target_value ? `/${g.target_value}` : ""} {g.unit ?? ""}
-                    </span>
-                  </div>
-                  {g.target_value && (
-                    <div className="h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
-                      <div className="h-full bg-zinc-900 dark:bg-zinc-100" style={{ width: `${pct}%` }} />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="งานรอคำตอบ (Follow-up)"
-        icon={<Clock weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {followUps.length === 0 ? (
-          <p className="text-sm text-zinc-400">ไม่มีงานรอคำตอบ</p>
-        ) : (
-          <ul className="space-y-2">
-            {followUps.map((f) => (
-              <li key={f.id} className="flex items-start gap-2 text-sm">
-                <button
-                  onClick={() => closeFollowUp(f.id)}
-                  className="text-xs px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex-shrink-0"
-                >
-                  ปิด
-                </button>
-                <div className="flex-1">
-                  <p className="text-zinc-700 dark:text-zinc-300">{f.subject}</p>
-                  {f.waiting_for && <p className="text-xs text-zinc-400">รอ: {f.waiting_for}</p>}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="บันทึกล่าสุด"
-        icon={<NotePencil weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {memories.length === 0 ? (
-          <p className="text-sm text-zinc-400">ยังไม่มีบันทึก — พิมพ์หรือส่งอะไรก็ได้ โฮชิจะจดให้อัตโนมัติ</p>
-        ) : (
-          <ul className="space-y-3">
-            {memories.map((m) => (
-              <li key={m.id} className="text-sm">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <p className="text-xs text-zinc-400">{fmtDate(m.created_at)}</p>
-                  {(m.tags ?? []).length > 0 && (
-                    <div className="flex gap-1">
-                      {m.tags!.slice(0, 3).map((t) => (
-                        <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
-                          #{t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <p className="text-zinc-700 dark:text-zinc-300 line-clamp-3 whitespace-pre-line">{m.content}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title={`สรุปประชุมล่าสุด (${meetings.length})`}
-        icon={<ClipboardText weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {meetings.length === 0 ? (
-          <p className="text-sm text-zinc-400">ยังไม่มีบันทึกประชุม — ส่งสรุปประชุมมาได้เลย โฮชิจะจดแท็ก #meeting ให้อัตโนมัติ</p>
-        ) : (
-          <ul className="space-y-3">
-            {meetings.map((m) => (
-              <li key={m.id} className="text-sm">
-                <p className="text-xs text-zinc-400 mb-0.5">{fmtDate(m.created_at)}</p>
-                <p className="text-zinc-700 dark:text-zinc-300 line-clamp-3 whitespace-pre-line">{m.content}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="บันทึกประจำวันล่าสุด"
-        icon={<BookOpen weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {journal.length === 0 ? (
-          <p className="text-sm text-zinc-400">ยังไม่มีบันทึก</p>
-        ) : (
-          <ul className="space-y-2">
-            {journal.map((j) => (
-              <li key={j.id} className="text-sm">
-                <p className="text-xs text-zinc-400 mb-0.5">{j.entry_date}</p>
-                <p className="text-zinc-700 dark:text-zinc-300 line-clamp-3">{j.content}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card
-        title="ประวัติแชทล่าสุด"
-        icon={<ChatCircleDots weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-      >
-        {messages.length === 0 ? (
-          <p className="text-sm text-zinc-400">ยังไม่มีประวัติ</p>
-        ) : (
-          <ul className="space-y-1.5 max-h-64 overflow-y-auto">
-            {messages
-              .slice()
-              .reverse()
-              .map((m) => (
-                <li key={m.id} className="text-xs">
-                  <span
-                    className={`font-medium mr-1 ${
-                      m.role === "user" ? "text-zinc-900 dark:text-zinc-100" : "text-emerald-600 dark:text-emerald-400"
-                    }`}
-                  >
-                    {m.role === "user" ? "คุณ" : "โฮชิ"}:
-                  </span>
-                  <span className="text-zinc-500">{m.content.slice(0, 120)}</span>
-                </li>
-              ))}
-          </ul>
-        )}
-      </Card>
-
-      {usage && (
-        <Card
-          title="การใช้งาน AI (7 วัน)"
-          icon={<ChartBar weight="fill" className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-        >
-          {usage.error || usage.summary.totalCalls === 0 ? (
-            <p className="text-sm text-zinc-400">ยังไม่มีข้อมูลการใช้งาน</p>
-          ) : (
-            <>
-              <p className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-2">
-                {usage.summary.totalTokens.toLocaleString()} tokens
-                <span className="text-sm text-zinc-400 font-normal ml-2">{usage.summary.totalCalls} calls</span>
-              </p>
-              <div className="space-y-1">
-                {Object.entries(usage.summary.byProvider).map(([provider, stats]) => (
-                  <div key={provider} className="flex justify-between text-xs text-zinc-500">
-                    <span>{provider}</span>
-                    <span>
-                      {stats.calls} calls · {stats.totalTokens.toLocaleString()} tokens · ~{stats.avgElapsedMs}ms
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </Card>
-      )}
+      </nav>
     </div>
   );
 }
