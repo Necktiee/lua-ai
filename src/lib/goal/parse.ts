@@ -13,22 +13,27 @@ export interface ParsedGoal {
 }
 
 export async function parseGoal(text: string): Promise<ParsedGoal | null> {
-  const res = await chat({
-    messages: [
-      {
-        role: "system",
-        content: `แยกข้อมูลเป้าหมายจากข้อความไทย เป็น JSON:
+  let res;
+  try {
+    res = await chat({
+      messages: [
+        {
+          role: "system",
+          content: `แยกข้อมูลเป้าหมายจากข้อความไทย เป็น JSON:
 {"title": "ชื่อเป้าหมาย", "target": number หรือ null, "unit": "หน่วย เช่น นาที กม. หน้า", "period": "daily|weekly|monthly"}
 - ถ้ามี "/วัน" หรือ "ต่อวัน" → period=daily
 - ถ้ามี "/สัปดาห์" หรือ "ต่อสัปดาห์" → period=weekly
 - ถ้ามี "/เดือน" → period=monthly
 - default period=daily
 - ถ้าไม่มีตัวเลข target ตอบ null`,
-      },
-      { role: "user", content: text },
-    ],
-    options: { lite: true, temperature: 0, maxOutputTokens: 150 },
-  });
+        },
+        { role: "user", content: text },
+      ],
+      options: { lite: true, temperature: 0, maxOutputTokens: 150 },
+    });
+  } catch {
+    return null;
+  }
 
   try {
     const parsed = JSON.parse(res.text.replace(/```json|```/g, "").trim());
@@ -56,19 +61,24 @@ export interface ParsedGoalLog {
 }
 
 export async function parseGoalLog(text: string): Promise<ParsedGoalLog | null> {
-  const res = await chat({
-    messages: [
-      {
-        role: "system",
-        content: `แยกข้อมูลการบันทึกความคืบหน้าเป้าหมายจากข้อความไทย เป็น JSON:
+  let res;
+  try {
+    res = await chat({
+      messages: [
+        {
+          role: "system",
+          content: `แยกข้อมูลการบันทึกความคืบหน้าเป้าหมายจากข้อความไทย เป็น JSON:
 {"title_hint": "คำเชื่อมโยงเป้าหมาย เช่น ภาษา วิ่ง อ่าน หรือ null", "value": number, "unit": "หน่วย หรือ null", "note": "หมายเหตุ หรือ null"}
 - value เป็นตัวเลขเท่านั้น
 - ถ้าไม่มีตัวเลข ตอบ {"error": true}`,
-      },
-      { role: "user", content: text },
-    ],
-    options: { lite: true, temperature: 0, maxOutputTokens: 150 },
-  });
+        },
+        { role: "user", content: text },
+      ],
+      options: { lite: true, temperature: 0, maxOutputTokens: 150 },
+    });
+  } catch {
+    return null;
+  }
 
   try {
     const parsed = JSON.parse(res.text.replace(/```json|```/g, "").trim());
