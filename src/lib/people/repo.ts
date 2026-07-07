@@ -113,6 +113,61 @@ export async function setPersonTier(
   return (data as Person | null) ?? null;
 }
 
+/**
+ * Delete a person row (and cascades people_mentions via FK). Returns false if
+ * the row didn't exist. count exact, warn-not-throw (mirrors deleteKnowledge).
+ */
+export async function deletePerson(userId: string, id: string): Promise<boolean> {
+  const db = requireDb();
+  const { error, count } = await db
+    .from("people")
+    .delete({ count: "exact" })
+    .eq("user_id", userId)
+    .eq("id", id);
+  if (error) console.warn("[people] delete", error.message);
+  return (count ?? 0) > 0;
+}
+
+export interface UpdatePersonArgs {
+  name?: string;
+  aliases?: string[];
+  notes?: Record<string, unknown>;
+  tier?: 1 | 2 | 3 | 4 | null;
+}
+
+/**
+ * Update a person by id (dashboard inline edit). Notes are REPLACED when
+ * provided (not merged) — dashboard is the owner's source of truth for the
+ * editable view, unlike the passive extraction upsert which merges.
+ * Returns null if not found.
+ */
+export async function updatePerson(
+  userId: string,
+  id: string,
+  patch: UpdatePersonArgs,
+): Promise<Person | null> {
+  const db = requireDb();
+  const updates: Record<string, unknown> = {};
+  if (patch.name !== undefined) updates.name = patch.name;
+  if (patch.aliases !== undefined) updates.aliases = patch.aliases;
+  if (patch.notes !== undefined) updates.notes = patch.notes;
+  if (patch.tier !== undefined) updates.tier = patch.tier;
+  if (Object.keys(updates).length === 0) return null;
+
+  const { data, error } = await db
+    .from("people")
+    .update(updates)
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.warn("[people] update", error.message);
+    return null;
+  }
+  return (data as Person | null) ?? null;
+}
+
 export async function findPerson(userId: string, nameQuery: string): Promise<Person | null> {
   const db = requireDb();
   const safeQuery = escapePostgresString(nameQuery);

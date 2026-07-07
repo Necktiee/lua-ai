@@ -20,6 +20,7 @@ import {
   Sparkle,
   Target,
   Trash,
+  Users,
   Wallet,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -147,7 +148,17 @@ interface Knowledge {
   updated_at: string;
 }
 
-type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "knowledge" | "system";
+interface PersonView {
+  id: string;
+  name: string;
+  aliases: string[];
+  notes: Record<string, unknown>;
+  tier?: 1 | 2 | 3 | 4 | null;
+  last_seen?: string | null;
+  updated_at: string;
+}
+
+type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "knowledge" | "people" | "system";
 
 const NAV_ITEMS: Array<{
   id: PageId;
@@ -162,6 +173,7 @@ const NAV_ITEMS: Array<{
   { id: "goals", label: "เป้าหมาย", short: "เป้า", icon: (c) => <Target weight="fill" className={c} /> },
   { id: "memory", label: "บันทึก", short: "จำ", icon: (c) => <NotePencil weight="fill" className={c} /> },
   { id: "knowledge", label: "ตัวตน", short: "ตัวตน", icon: (c) => <Brain weight="fill" className={c} /> },
+  { id: "people", label: "คน", short: "คน", icon: (c) => <Users weight="fill" className={c} /> },
   { id: "system", label: "ระบบ", short: "ระบบ", icon: (c) => <Gear weight="fill" className={c} /> },
 ];
 
@@ -219,6 +231,13 @@ const KB_CATEGORY_ROWS: ReadonlyArray<readonly [Knowledge["category"], string]> 
   ["relationship", "คนสำคัญ"],
   ["preference", "ความชอบ"],
   ["context", "บริบท"],
+];
+
+const TIER_ROWS: ReadonlyArray<readonly [1 | 2 | 3 | 4, string]> = [
+  [1, "P1 · สำคัญที่สุด"],
+  [2, "P2 · สัมพันธ์สำคัญ"],
+  [3, "P3 · ทั่วไป"],
+  [4, "P4 · ภายนอก/เย็น"],
 ];
 
 function Pill({ ok, label }: { ok: boolean; label: string }) {
@@ -325,7 +344,21 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [memories, setMemories] = useState<MemoryNote[]>([]);
   const [knowledge, setKnowledge] = useState<Knowledge[]>([]);
+  const [people, setPeople] = useState<PersonView[]>([]);
   const [newTodo, setNewTodo] = useState("");
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonTier, setNewPersonTier] = useState<1 | 2 | 3 | 4>(3);
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editAliases, setEditAliases] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [newKbCategory, setNewKbCategory] = useState<Knowledge["category"]>("profile");
+  const [newKbKey, setNewKbKey] = useState("");
+  const [newKbValue, setNewKbValue] = useState("");
+  const [newKbPriority, setNewKbPriority] = useState<1 | 2 | 3>(2);
+  const [editingKbId, setEditingKbId] = useState<string | null>(null);
+  const [editKbKey, setEditKbKey] = useState("");
+  const [editKbValue, setEditKbValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -336,7 +369,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   }, []);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes, knowledgeRes] = await Promise.all([
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes, knowledgeRes, peopleRes] = await Promise.all([
       safeFetch<StatusData | null>("/api/dashboard/status", null),
       safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
       safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=14", {}),
@@ -349,6 +382,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       safeFetch<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
       safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=40", { memories: [] }),
       safeFetch<{ knowledge: Knowledge[] }>("/api/dashboard/knowledge", { knowledge: [] }),
+      safeFetch<{ people: PersonView[] }>("/api/dashboard/people?limit=60", { people: [] }),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -365,6 +399,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setMeetings(meetingsRes.meetings ?? []);
     setMemories(memoriesRes.memories ?? []);
     setKnowledge(knowledgeRes.knowledge ?? []);
+    setPeople(peopleRes.people ?? []);
     setLoaded(true);
   }, []);
 
@@ -473,6 +508,98 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("patch knowledge failed");
     } catch {
       setKnowledge(previous);
+    }
+  }
+
+  async function createKnowledge(input: { category: Knowledge["category"]; key: string; value: string; priority: 1 | 2 | 3 }) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/dashboard/knowledge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!r.ok) throw new Error("create knowledge failed");
+      const { knowledge: item } = (await r.json()) as { knowledge: Knowledge };
+      setKnowledge((prev) => [item, ...prev]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveKnowledgeEdit(id: string, patch: { key: string; value: string }) {
+    const previous = knowledge;
+    setKnowledge((prev) => prev.map((k) => (k.id === id ? { ...k, key: patch.key, value: patch.value } : k)));
+    try {
+      const r = await fetch("/api/dashboard/knowledge", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, key: patch.key, value: patch.value }),
+      });
+      if (!r.ok) throw new Error("patch knowledge failed");
+    } catch {
+      setKnowledge(previous);
+    }
+  }
+
+  async function createPerson(input: { name: string; tier?: 1 | 2 | 3 | 4; aliases?: string[]; notesText?: string }) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const notes: Record<string, unknown> = {};
+      if (input.notesText?.trim()) notes.note = input.notesText.trim();
+      const r = await fetch("/api/dashboard/people", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: input.name.trim(), tier: input.tier, aliases: input.aliases, notes }),
+      });
+      if (!r.ok) throw new Error("create person failed");
+      const { person } = (await r.json()) as { person: PersonView };
+      setPeople((prev) => [person, ...prev]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePersonEdit(id: string, patch: Partial<Pick<PersonView, "name" | "aliases" | "tier">> & { notesText?: string }) {
+    const previous = people;
+    setPeople((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch, aliases: patch.aliases ?? p.aliases, tier: patch.tier ?? p.tier } : p)));
+    const body: Record<string, unknown> = { id };
+    if (patch.name !== undefined) body.name = patch.name;
+    if (patch.aliases !== undefined) body.aliases = patch.aliases;
+    if (patch.tier !== undefined) body.tier = patch.tier;
+    if (patch.notesText !== undefined) body.notes = patch.notesText.trim() ? { note: patch.notesText.trim() } : {};
+    try {
+      const r = await fetch("/api/dashboard/people", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error("patch person failed");
+    } catch {
+      setPeople(previous);
+    }
+  }
+
+  async function cyclePersonTier(id: string) {
+    const target = people.find((p) => p.id === id);
+    if (!target) return;
+    const current = target.tier ?? 3;
+    const next = ((current % 4) + 1) as 1 | 2 | 3 | 4;
+    await savePersonEdit(id, { tier: next });
+  }
+
+  async function deletePersonItem(id: string) {
+    const target = people.find((p) => p.id === id);
+    if (!target || !window.confirm(`ลบ "${target.name}" ถาวร?`)) return;
+    const previous = people;
+    setPeople((prev) => prev.filter((p) => p.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/people?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("delete person failed");
+    } catch {
+      setPeople(previous);
     }
   }
 
@@ -992,9 +1119,61 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   </div>
                 </Card>
 
+                <Card title="เพิ่มข้อมูลถาวร" icon={<Plus weight="bold" className="h-4 w-4 text-emerald-500" />}>
+                  <div className="flex flex-col gap-3">
+                    <div className="grid gap-2 sm:grid-cols-[140px_1fr_100px]">
+                      <select
+                        value={newKbCategory}
+                        onChange={(e) => setNewKbCategory(e.target.value as Knowledge["category"])}
+                        className="min-h-11 rounded-2xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                      >
+                        {KB_CATEGORY_ROWS.map(([cat, label]) => (
+                          <option key={cat} value={cat}>{label}</option>
+                        ))}
+                      </select>
+                      <input
+                        value={newKbKey}
+                        onChange={(e) => setNewKbKey(e.target.value)}
+                        placeholder="หัวข้อ เช่น ชื่อ, อาชีพ, เวลานัด"
+                        className="min-h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                      />
+                      <select
+                        value={newKbPriority}
+                        onChange={(e) => setNewKbPriority(Number(e.target.value) as 1 | 2 | 3)}
+                        className="min-h-11 rounded-2xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                      >
+                        <option value={1}>ด่วน ใส่ทุกครั้ง</option>
+                        <option value={2}>ปกติ</option>
+                        <option value={3}>ค้นเท่านั้น</option>
+                      </select>
+                    </div>
+                    <textarea
+                      value={newKbValue}
+                      onChange={(e) => setNewKbValue(e.target.value)}
+                      placeholder="รายละเอียด"
+                      rows={2}
+                      className="w-full rounded-2xl border border-zinc-200 bg-white px-4 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                    <button
+                      onClick={() => {
+                        if (newKbKey.trim() && newKbValue.trim()) {
+                          createKnowledge({ category: newKbCategory, key: newKbKey.trim(), value: newKbValue.trim(), priority: newKbPriority });
+                          setNewKbKey("");
+                          setNewKbValue("");
+                        }
+                      }}
+                      disabled={busy || !newKbKey.trim() || !newKbValue.trim()}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-2xl bg-zinc-950 px-5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-950"
+                    >
+                      <Plus weight="bold" className="h-4 w-4" />
+                      เพิ่ม
+                    </button>
+                  </div>
+                </Card>
+
                 {knowledge.length === 0 ? (
                   <Card title="ยังไม่มีข้อมูลถาวร" icon={<Brain weight="fill" className="h-4 w-4 text-emerald-500" />}>
-                    <EmptyState title="สอนให้โฮชิรู้จักคุณ" hint="ส่งใน LINE ว่า “จดไว้ว่าชื่อ...” “จำไว้ว่าฉันชอบ...” หรือ “จำว่าวิธีทำ...” แล้วข้อมูลจะขึ้นที่นี่" icon={<Brain className="h-5 w-5" />} />
+                    <EmptyState title="สอนให้โฮชิรู้จักคุณ" hint="เพิ่มเองด้านบน หรือส่งใน LINE ว่า “จดไว้ว่าชื่อ...” “จำไว้ว่าฉันชอบ...” แล้วข้อมูลจะขึ้นที่นี่" icon={<Brain className="h-5 w-5" />} />
                   </Card>
                 ) : (
                   <div className="grid gap-4">
@@ -1004,43 +1183,250 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                       return (
                         <Card key={cat} title={`${label} (${rows.length})`} icon={<Brain weight="fill" className="h-4 w-4 text-emerald-500" />}>
                           <ul className="space-y-2">
-                            {rows.map((k) => (
-                              <li key={k.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
-                                <div className="flex items-start gap-3">
-                                  <PriorityDot p={k.priority} />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{k.key}</p>
-                                      {k.source !== "user" && (
-                                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">{k.source}</span>
-                                      )}
-                                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">
-                                        {k.priority === 1 ? "ใส่ทุกครั้ง" : k.priority === 3 ? "ค้นเท่านั้น" : "ปกติ"}
-                                      </span>
+                            {rows.map((k) => {
+                              const isEditing = editingKbId === k.id;
+                              return (
+                                <li key={k.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                                  {isEditing ? (
+                                    <div className="space-y-2">
+                                      <input
+                                        value={editKbKey}
+                                        onChange={(e) => setEditKbKey(e.target.value)}
+                                        placeholder="หัวข้อ"
+                                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <textarea
+                                        value={editKbValue}
+                                        onChange={(e) => setEditKbValue(e.target.value)}
+                                        rows={2}
+                                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => {
+                                            saveKnowledgeEdit(k.id, { key: editKbKey.trim() || k.key, value: editKbValue.trim() || k.value });
+                                            setEditingKbId(null);
+                                          }}
+                                          className="rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
+                                        >
+                                          บันทึก
+                                        </button>
+                                        <button onClick={() => setEditingKbId(null)} className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300">
+                                          ยกเลิก
+                                        </button>
+                                      </div>
                                     </div>
-                                    <p className="mt-1 whitespace-pre-line text-sm text-zinc-600 dark:text-zinc-300">{k.value}</p>
-                                    <p className="mt-1 text-[10px] text-zinc-400">อัปเดต {fmtDate(k.updated_at)}</p>
-                                  </div>
-                                  <div className="flex flex-shrink-0 flex-col gap-1">
-                                    <button
-                                      onClick={() => setKnowledgePriority(k.id, ((k.priority % 3) + 1) as 1 | 2 | 3)}
-                                      className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
-                                      title="สลับระดับ priority"
-                                    >
-                                      P{k.priority}
-                                    </button>
-                                    <button onClick={() => deleteKnowledgeItem(k.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete knowledge">
-                                      <Trash className="h-4 w-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              </li>
-                            ))}
+                                  ) : (
+                                    <div className="flex items-start gap-3">
+                                      <PriorityDot p={k.priority} />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{k.key}</p>
+                                          {k.source !== "user" && (
+                                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">{k.source}</span>
+                                          )}
+                                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">
+                                            {k.priority === 1 ? "ใส่ทุกครั้ง" : k.priority === 3 ? "ค้นเท่านั้น" : "ปกติ"}
+                                          </span>
+                                        </div>
+                                        <p className="mt-1 whitespace-pre-line text-sm text-zinc-600 dark:text-zinc-300">{k.value}</p>
+                                        <p className="mt-1 text-[10px] text-zinc-400">อัปเดต {fmtDate(k.updated_at)}</p>
+                                      </div>
+                                      <div className="flex flex-shrink-0 flex-col gap-1">
+                                        <button
+                                          onClick={() => setKnowledgePriority(k.id, ((k.priority % 3) + 1) as 1 | 2 | 3)}
+                                          className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                          title="สลับระดับ priority"
+                                        >
+                                          P{k.priority}
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setEditingKbId(k.id);
+                                            setEditKbKey(k.key);
+                                            setEditKbValue(k.value);
+                                          }}
+                                          className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                        >
+                                          แก้
+                                        </button>
+                                        <button onClick={() => deleteKnowledgeItem(k.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete knowledge">
+                                          <Trash className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </li>
+                              );
+                            })}
                           </ul>
                         </Card>
                       );
                     })}
                     <CommandHint>เพิ่ม: “จดไว้ว่าฉันชอบดื่มกาแฟดำ” · ถาม: “มีอะไรจำไว้บ้าง” · ลบ: “ลืมข้อ 2” หรือแก้ priority และลบได้ที่นี่</CommandHint>
+                  </div>
+                )}
+              </>
+            )}
+
+            {activePage === "people" && (
+              <>
+                <Card className="bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/25 dark:to-zinc-900">
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300">Relationships</p>
+                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">คนที่โฮชิรู้จัก</h1>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ระดับความสำคัญ (P1-P4) ใช้ตอนโฮชิตัดสินใจจัดลำดับ follow-up, เตือน และเตรียมประชุม — ยิ่ง P ต่ำยิ่งสำคัญ</p>
+                  </div>
+                </Card>
+
+                <Card title="เพิ่มคน" icon={<Plus weight="bold" className="h-4 w-4 text-emerald-500" />}>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <div className="min-w-0 flex-1">
+                      <label className="mb-1 block text-xs text-zinc-400">ชื่อ</label>
+                      <input
+                        value={newPersonName}
+                        onChange={(e) => setNewPersonName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && newPersonName.trim()) {
+                            createPerson({ name: newPersonName, tier: newPersonTier });
+                            setNewPersonName("");
+                          }
+                        }}
+                        placeholder="เช่น คุณแม่, John, หัวหน้า"
+                        className="min-h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:ring-emerald-950"
+                      />
+                    </div>
+                    <div className="sm:w-32">
+                      <label className="mb-1 block text-xs text-zinc-400">ระดับ</label>
+                      <select
+                        value={newPersonTier}
+                        onChange={(e) => setNewPersonTier(Number(e.target.value) as 1 | 2 | 3 | 4)}
+                        className="min-h-12 w-full rounded-2xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                      >
+                        <option value={1}>P1 สำคัญที่สุด</option>
+                        <option value={2}>P2 สัมพันธ์สำคัญ</option>
+                        <option value={3}>P3 ทั่วไป</option>
+                        <option value={4}>P4 ภายนอก/เย็น</option>
+                      </select>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (newPersonName.trim()) {
+                          createPerson({ name: newPersonName, tier: newPersonTier });
+                          setNewPersonName("");
+                        }
+                      }}
+                      disabled={busy || !newPersonName.trim()}
+                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-zinc-950 px-5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-950"
+                    >
+                      <Plus weight="bold" className="h-4 w-4" />
+                      เพิ่ม
+                    </button>
+                  </div>
+                </Card>
+
+                {people.length === 0 ? (
+                  <Card title="ยังไม่มีคนในระบบ" icon={<Users weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    <EmptyState title="โฮชิยังไม่รู้จักใคร" hint="เพิ่มเองด้านบน หรือพูดคุยใน LINE แล้วโฮชิจะจดชื่อคนให้" icon={<Users className="h-5 w-5" />} />
+                  </Card>
+                ) : (
+                  <div className="grid gap-4">
+                    {TIER_ROWS.map(([tier, label]) => {
+                      const rows = people.filter((p) => (p.tier ?? 3) === tier);
+                      if (rows.length === 0) return null;
+                      return (
+                        <Card key={tier} title={`${label} (${rows.length})`} icon={<Users weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                          <ul className="space-y-2">
+                            {rows.map((p) => {
+                              const isEditing = editingPersonId === p.id;
+                              const noteText = typeof p.notes?.note === "string" ? (p.notes.note as string) : "";
+                              return (
+                                <li key={p.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                                  {isEditing ? (
+                                    <div className="space-y-2">
+                                      <input
+                                        value={editName}
+                                        onChange={(e) => setEditName(e.target.value)}
+                                        placeholder="ชื่อ"
+                                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <input
+                                        value={editAliases}
+                                        onChange={(e) => setEditAliases(e.target.value)}
+                                        placeholder="ชื่อเล่น/อีกชื่อ (คั่นด้วยจุลภาค)"
+                                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <input
+                                        value={editNotes}
+                                        onChange={(e) => setEditNotes(e.target.value)}
+                                        placeholder="โน้ต (เช่น เกิด 15 ม.ค., เป็น CEO บริษัท X)"
+                                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => {
+                                            savePersonEdit(p.id, {
+                                              name: editName.trim() || p.name,
+                                              aliases: editAliases.split(",").map((a) => a.trim()).filter(Boolean),
+                                              notesText: editNotes,
+                                            });
+                                            setEditingPersonId(null);
+                                          }}
+                                          className="rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
+                                        >
+                                          บันทึก
+                                        </button>
+                                        <button onClick={() => setEditingPersonId(null)} className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300">
+                                          ยกเลิก
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-start gap-3">
+                                      <span className={`mt-1 inline-block h-2 w-2 flex-shrink-0 rounded-full ${tier === 1 ? "bg-red-500" : tier === 2 ? "bg-amber-500" : tier === 4 ? "bg-zinc-300 dark:bg-zinc-600" : "bg-emerald-500"}`} />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{p.name}</p>
+                                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">P{tier}</span>
+                                        </div>
+                                        {p.aliases && p.aliases.length > 0 && (
+                                          <p className="mt-0.5 text-xs text-zinc-400">เรียก: {p.aliases.join(", ")}</p>
+                                        )}
+                                        {noteText && <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{noteText}</p>}
+                                      </div>
+                                      <div className="flex flex-shrink-0 flex-col gap-1">
+                                        <button
+                                          onClick={() => cyclePersonTier(p.id)}
+                                          className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                          title="สลับระดับ"
+                                        >
+                                          P{tier}
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setEditingPersonId(p.id);
+                                            setEditName(p.name);
+                                            setEditAliases(p.aliases.join(", "));
+                                            setEditNotes(noteText);
+                                          }}
+                                          className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                        >
+                                          แก้
+                                        </button>
+                                        <button onClick={() => deletePersonItem(p.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete person">
+                                          <Trash className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </Card>
+                      );
+                    })}
+                    <CommandHint>เพิ่ม/แก้/ลบได้ที่นี่ หรือใน LINE ว่า “ตั้ง คุณแม่ เป็น P1” · P1 สำคัญที่สุด-หัวหน้า/ครอบครัว · P4 ภายนอก/เย็น</CommandHint>
                   </div>
                 )}
               </>
@@ -1131,7 +1517,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90 lg:hidden">
-        <div className="mx-auto grid max-w-2xl grid-cols-8 gap-1">
+        <div className="mx-auto grid max-w-2xl grid-cols-9 gap-1">
           {NAV_ITEMS.map((item) => {
             const active = item.id === activePage;
             return (
