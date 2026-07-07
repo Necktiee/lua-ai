@@ -363,6 +363,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [newGoalTarget, setNewGoalTarget] = useState("");
   const [newGoalUnit, setNewGoalUnit] = useState("");
   const [newGoalPeriod, setNewGoalPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
+  const [editTodoTitle, setEditTodoTitle] = useState("");
+  const [editTodoDue, setEditTodoDue] = useState("");
+  const [editTodoPriority, setEditTodoPriority] = useState<1 | 2 | 3>(2);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -482,6 +486,27 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     try {
       const r = await fetch(`/api/dashboard/todos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
       if (!r.ok) throw new Error("delete failed");
+    } catch {
+      setTodos(previous);
+    }
+  }
+
+  async function saveTodoEdit(id: string) {
+    const patch = {
+      title: editTodoTitle.trim() || undefined,
+      dueAt: editTodoDue.trim() || null,
+      priority: editTodoPriority,
+    };
+    const previous = todos;
+    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, title: patch.title ?? t.title, due_at: patch.dueAt ?? t.due_at ?? null, priority: patch.priority } : t)));
+    try {
+      const r = await fetch("/api/dashboard/todos", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, ...patch }),
+      });
+      if (!r.ok) throw new Error("edit todo failed");
+      setEditingTodoId(null);
     } catch {
       setTodos(previous);
     }
@@ -901,22 +926,68 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                         <p className="text-sm text-zinc-400">ไม่มีงานในช่องนี้</p>
                       ) : (
                         <ul className="space-y-2">
-                          {lane.rows.map((todo) => (
-                            <li key={todo.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
-                              <div className="flex items-start gap-3">
-                                <button onClick={() => completeTodo(todo.id)} className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-300 text-zinc-400 transition hover:border-emerald-400 hover:text-emerald-500 dark:border-zinc-700" aria-label="complete todo">
-                                  <CheckCircle className="h-4 w-4" />
-                                </button>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-sm font-medium leading-5 text-zinc-800 dark:text-zinc-100">{todo.title}</p>
-                                  {todo.due_at && <p className="mt-1 text-xs text-zinc-400">{fmtDate(todo.due_at)}</p>}
-                                </div>
-                                <button onClick={() => deleteTodo(todo.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete todo">
-                                  <Trash className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </li>
-                          ))}
+                          {lane.rows.map((todo) => {
+                            const isEditingTodo = editingTodoId === todo.id;
+                            return (
+                              <li key={todo.id} className="rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                                {isEditingTodo ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      value={editTodoTitle}
+                                      onChange={(e) => setEditTodoTitle(e.target.value)}
+                                      placeholder="ชื่องาน"
+                                      className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                    />
+                                    <div className="flex flex-wrap gap-2">
+                                      <input
+                                        value={editTodoDue}
+                                        onChange={(e) => setEditTodoDue(e.target.value)}
+                                        placeholder="กำหนด (เช่น พรุ่งนี้ 9 โมง)"
+                                        className="min-w-[160px] flex-1 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      />
+                                      <select
+                                        value={editTodoPriority}
+                                        onChange={(e) => setEditTodoPriority(Number(e.target.value) as 1 | 2 | 3)}
+                                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                      >
+                                        <option value={1}>ด่วน</option>
+                                        <option value={2}>ปกติ</option>
+                                        <option value={3}>ไม่รีบ</option>
+                                      </select>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <button onClick={() => saveTodoEdit(todo.id)} className="rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white active:scale-[0.98]">บันทึก</button>
+                                      <button onClick={() => setEditingTodoId(null)} className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300">ยกเลิก</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-start gap-3">
+                                    <button onClick={() => completeTodo(todo.id)} className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-300 text-zinc-400 transition hover:border-emerald-400 hover:text-emerald-500 dark:border-zinc-700" aria-label="complete todo">
+                                      <CheckCircle className="h-4 w-4" />
+                                    </button>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-medium leading-5 text-zinc-800 dark:text-zinc-100">{todo.title}</p>
+                                      {todo.due_at && <p className="mt-1 text-xs text-zinc-400">{fmtDate(todo.due_at)}</p>}
+                                    </div>
+                                    <button
+                                      onClick={() => {
+                                        setEditingTodoId(todo.id);
+                                        setEditTodoTitle(todo.title);
+                                        setEditTodoDue(todo.due_at ?? "");
+                                        setEditTodoPriority(todo.priority);
+                                      }}
+                                      className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-zinc-600 shadow-sm transition active:scale-[0.98] dark:bg-zinc-900 dark:text-zinc-300"
+                                    >
+                                      แก้
+                                    </button>
+                                    <button onClick={() => deleteTodo(todo.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete todo">
+                                      <Trash className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                )}
+                              </li>
+                            );
+                          })}
                         </ul>
                       )}
                     </Card>
