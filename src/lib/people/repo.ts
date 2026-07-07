@@ -136,6 +136,43 @@ export async function findPerson(userId: string, nameQuery: string): Promise<Per
   return match ?? null;
 }
 
+/**
+ * Return ALL people matching a name/alias query (plural). Used by write paths
+ * (people_set_tier) where silently picking the first match on an ambiguous
+ * query would mutate the wrong person's record. Reads (people_ask) can keep
+ * using findPerson's first-match behavior.
+ */
+export async function findPeople(userId: string, nameQuery: string): Promise<Person[]> {
+  if (!nameQuery.trim()) return [];
+  const db = requireDb();
+  const safeQuery = escapePostgresString(nameQuery);
+  const { data: byName, error } = await db
+    .from("people")
+    .select("*")
+    .eq("user_id", userId)
+    .ilike("name", `%${safeQuery}%`)
+    .order("updated_at", { ascending: false });
+  if (error) console.warn("[people] findAll", error.message);
+  const seen = new Set<string>();
+  const results: Person[] = [];
+  for (const p of (byName ?? []) as Person[]) {
+    if (!seen.has(p.id)) {
+      seen.add(p.id);
+      results.push(p);
+    }
+  }
+  // also match aliases, dedup against name matches
+  const { data: all } = await db.from("people").select("*").eq("user_id", userId);
+  for (const p of (all ?? []) as Person[]) {
+    if (seen.has(p.id)) continue;
+    if ((p.aliases ?? []).some((a) => a.toLowerCase().includes(nameQuery.toLowerCase()))) {
+      seen.add(p.id);
+      results.push(p);
+    }
+  }
+  return results;
+}
+
 /** Escape special Postgres/PostgREST chars in string filters. */
 function escapePostgresString(s: string): string {
   return s.replace(/[%_\\'"(),.]/g, "\\$&");

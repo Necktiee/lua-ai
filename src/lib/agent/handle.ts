@@ -357,7 +357,7 @@ async function dispatch(
     }
 
     case "people_set_tier": {
-      const { findPerson, setPersonTier } = await import("@/lib/people/repo");
+      const { findPeople, setPersonTier } = await import("@/lib/people/repo");
       const tier =
         intent.tier ??
         ([1, 2, 3, 4].find((n) => new RegExp(`\\b${n}\\b|P${n}\\b`, "i").test(intent.raw)) as
@@ -373,15 +373,32 @@ async function dispatch(
       if (!nameQuery.trim()) {
         return "บอกชื่อคนที่จะปรับระดับด้วยครับ เช่น “ตั้ง คุณแม่ เป็น P1”";
       }
-      const person = await findPerson(input.userId, nameQuery);
-      if (!person) {
+      const candidates = await findPeople(input.userId, nameQuery);
+      if (candidates.length === 0) {
         return `ยังไม่รู้จักคนชื่อ "${nameQuery}" ครับ — ลองสะกดชื่อใหม่ หรือพูดถึงชื่อนี้ในบทสนทนาก่อนแล้วโฮชิจะจำได้`;
       }
-      const updated = await setPersonTier(input.userId, person.id, tier);
+      // Ambiguity guard: never silently mutate the wrong person's tier. If the
+      // query matches multiple people, ask the owner to disambiguate instead.
+      let target = candidates[0];
+      if (candidates.length > 1) {
+        const exact = candidates.find(
+          (p) => p.name.toLowerCase() === nameQuery.trim().toLowerCase(),
+        );
+        if (exact) {
+          target = exact;
+        } else {
+          const list = candidates
+            .slice(0, 6)
+            .map((p) => `• ${p.name}`)
+            .join("\n");
+          return `ชื่อ "${nameQuery}" ตรงกับหลายคน โปรดระบุให้ชัดเจนขึ้นครับ:\n${list}\n\nเช่น "ตั้ง คุณสมชาย X เป็น P${tier}"`;
+        }
+      }
+      const updated = await setPersonTier(input.userId, target.id, tier);
       if (!updated) return "ปรับระดับไม่สำเร็จครับ ลองอีกครั้ง";
       const label =
         tier === 1 ? "สำคัญที่สุด" : tier === 2 ? "สัมพันธ์สำคัญ" : tier === 4 ? "ภายนอก/เย็น" : "ทั่วไป";
-      return `ตั้งให้แล้วครับ ⭐ P${tier} · ${person.name}\nระดับ: ${label}`;
+      return `ตั้งให้แล้วครับ ⭐ P${tier} · ${target.name}\nระดับ: ${label}`;
     }
 
     case "expense_add": {
