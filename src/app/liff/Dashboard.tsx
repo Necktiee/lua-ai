@@ -359,6 +359,10 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [editingKbId, setEditingKbId] = useState<string | null>(null);
   const [editKbKey, setEditKbKey] = useState("");
   const [editKbValue, setEditKbValue] = useState("");
+  const [newGoalTitle, setNewGoalTitle] = useState("");
+  const [newGoalTarget, setNewGoalTarget] = useState("");
+  const [newGoalUnit, setNewGoalUnit] = useState("");
+  const [newGoalPeriod, setNewGoalPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -600,6 +604,75 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("delete person failed");
     } catch {
       setPeople(previous);
+    }
+  }
+
+  async function deleteExpenseItem(id: string) {
+    const previous = expenses;
+    setExpenses((prev) => prev.filter((e) => e.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/expenses?id=${encodeURIComponent(id)}&kind=expense`, { method: "DELETE" });
+      if (!r.ok) throw new Error("delete expense failed");
+    } catch {
+      setExpenses(previous);
+    }
+  }
+
+  async function cancelSubscriptionItem(id: string) {
+    const target = subs.find((s) => s.id === id);
+    if (!target || !window.confirm(`ยกเลิก "${target.name}"?`)) return;
+    const previous = subs;
+    setSubs((prev) => prev.filter((s) => s.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/expenses?id=${encodeURIComponent(id)}&kind=subscription`, { method: "DELETE" });
+      if (!r.ok) throw new Error("cancel subscription failed");
+    } catch {
+      setSubs(previous);
+    }
+  }
+
+  async function deleteGoalItem(id: string) {
+    const target = goals.find((g) => g.id === id);
+    if (!target || !window.confirm(`ลบเป้าหมาย "${target.title}"?`)) return;
+    const previous = goals;
+    setGoals((prev) => prev.filter((g) => g.id !== id));
+    try {
+      const r = await fetch(`/api/dashboard/goals?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("delete goal failed");
+    } catch {
+      setGoals(previous);
+    }
+  }
+
+  async function createGoal(input: { title: string; period: "daily" | "weekly" | "monthly"; targetValue?: number; unit?: string }) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/dashboard/goals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!r.ok) throw new Error("create goal failed");
+      const { goal } = (await r.json()) as { goal: Goal };
+      setGoals((prev) => [goal, ...prev]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMemoryItem(id: string) {
+    const previous = memories;
+    setMemories((prev) => prev.filter((m) => m.id !== id));
+    try {
+      const r = await fetch("/api/dashboard/memories", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!r.ok) throw new Error("delete memory failed");
+    } catch {
+      setMemories(previous);
     }
   }
 
@@ -974,9 +1047,14 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                     ) : (
                       <ul className="space-y-2">
                         {subs.map((sub) => (
-                          <li key={sub.id} className="flex items-center justify-between rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
+                          <li key={sub.id} className="flex items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
                             <span className="font-medium text-zinc-800 dark:text-zinc-100">{sub.name}</span>
-                            <span className="text-zinc-500">{money.format(sub.amount)} {sub.currency}/{sub.billing_cycle}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-zinc-500">{money.format(sub.amount)} {sub.currency}/{sub.billing_cycle}</span>
+                              <button onClick={() => cancelSubscriptionItem(sub.id)} className="rounded-full p-1 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="cancel subscription">
+                                <Trash className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -995,7 +1073,12 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                             <p className="truncate font-medium text-zinc-800 dark:text-zinc-100">{expense.description || expense.category}</p>
                             <p className="text-xs text-zinc-400">{expense.category} · {fmtDay(expense.expense_date)}</p>
                           </div>
-                          <p className="font-semibold text-zinc-950 dark:text-zinc-50">{money.format(expense.amount)} {expense.currency}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-semibold text-zinc-950 dark:text-zinc-50">{money.format(expense.amount)} {expense.currency}</p>
+                            <button onClick={() => deleteExpenseItem(expense.id)} className="rounded-full p-1 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete expense">
+                              <Trash className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>
@@ -1017,8 +1100,63 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   </div>
                 </Card>
 
+                <Card title="ตั้งเป้าหมายใหม่" icon={<Plus weight="bold" className="h-4 w-4 text-emerald-500" />}>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <div className="min-w-0 flex-1">
+                      <input
+                        value={newGoalTitle}
+                        onChange={(e) => setNewGoalTitle(e.target.value)}
+                        placeholder="เช่น อ่านหนังสือ, วิ่ง"
+                        className="min-h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                      />
+                    </div>
+                    <input
+                      value={newGoalTarget}
+                      onChange={(e) => setNewGoalTarget(e.target.value)}
+                      placeholder="เป้า"
+                      className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 sm:w-20"
+                    />
+                    <input
+                      value={newGoalUnit}
+                      onChange={(e) => setNewGoalUnit(e.target.value)}
+                      placeholder="หน่วย"
+                      className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 sm:w-24"
+                    />
+                    <select
+                      value={newGoalPeriod}
+                      onChange={(e) => setNewGoalPeriod(e.target.value as "daily" | "weekly" | "monthly")}
+                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-emerald-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                    >
+                      <option value="daily">ทุกวัน</option>
+                      <option value="weekly">ทุกสัปดาห์</option>
+                      <option value="monthly">ทุกเดือน</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        const targetNum = Number(newGoalTarget);
+                        if (newGoalTitle.trim()) {
+                          createGoal({
+                            title: newGoalTitle.trim(),
+                            period: newGoalPeriod,
+                            targetValue: Number.isFinite(targetNum) && targetNum > 0 ? targetNum : undefined,
+                            unit: newGoalUnit.trim() || undefined,
+                          });
+                          setNewGoalTitle("");
+                          setNewGoalTarget("");
+                          setNewGoalUnit("");
+                        }
+                      }}
+                      disabled={busy || !newGoalTitle.trim()}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-zinc-950 px-5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-950"
+                    >
+                      <Plus weight="bold" className="h-4 w-4" />
+                      เพิ่ม
+                    </button>
+                  </div>
+                </Card>
+
                 {goals.length === 0 ? (
-                  <EmptyState title="ยังไม่มีเป้าหมาย" hint="พิมพ์ใน LINE เช่น 'ตั้งเป้าอ่านหนังสือ 20 หน้า/วัน'" icon={<Target className="h-5 w-5" />} />
+                  <EmptyState title="ยังไม่มีเป้าหมาย" hint="เพิ่มเองด้านบน หรือพิมพ์ใน LINE เช่น 'ตั้งเป้าอ่านหนังสือ 20 หน้า/วัน'" icon={<Target className="h-5 w-5" />} />
                 ) : (
                   <div className="grid gap-4 lg:grid-cols-2">
                     {goals.map((goal) => {
@@ -1030,7 +1168,12 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                               <p className="text-lg font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">{goal.title}</p>
                               <p className="text-xs text-zinc-400">{goal.period}</p>
                             </div>
-                            <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">{pct}%</span>
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">{pct}%</span>
+                              <button onClick={() => deleteGoalItem(goal.id)} className="rounded-full p-1.5 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete goal">
+                                <Trash className="h-4 w-4" />
+                              </button>
+                            </div>
                           </div>
                           <div className="mb-3 h-3 rounded-full bg-zinc-100 dark:bg-zinc-800">
                             <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(3, pct)}%` }} />
@@ -1068,6 +1211,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                               {(memory.tags ?? []).slice(0, 4).map((tag) => (
                                 <span key={tag} className="rounded-full bg-white px-2 py-0.5 text-[10px] text-zinc-500 shadow-sm dark:bg-zinc-900">#{tag}</span>
                               ))}
+                              <button onClick={() => deleteMemoryItem(memory.id)} className="ml-auto rounded-full p-1 text-zinc-300 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30" aria-label="delete memory">
+                                <Trash className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                             <p className="line-clamp-4 whitespace-pre-line text-zinc-700 dark:text-zinc-300">{memory.content}</p>
                           </li>

@@ -81,6 +81,18 @@ export async function listExpenses(userId: string, limit = 20): Promise<Expense[
   return (data ?? []) as Expense[];
 }
 
+/** Delete an expense row. Returns false if not found. count exact, warn-not-throw. */
+export async function deleteExpense(userId: string, id: string): Promise<boolean> {
+  const db = requireDb();
+  const { error, count } = await db
+    .from("expenses")
+    .delete({ count: "exact" })
+    .eq("user_id", userId)
+    .eq("id", id);
+  if (error) console.warn("[expense] delete", error.message);
+  return (count ?? 0) > 0;
+}
+
 // ============================================================
 // Subscriptions
 // ============================================================
@@ -144,4 +156,26 @@ export async function getUpcomingSubscriptions(userId: string, daysAhead = 7): P
     .order("next_billing", { ascending: true });
   if (error) console.warn("[subscription] upcoming", error.message);
   return (data ?? []) as Subscription[];
+}
+
+/**
+ * Deactivate a subscription (soft-delete: sets active=false). Hard delete would
+ * break historical expense summaries, so we keep the row. Returns false if not
+ * found. count exact, warn-not-throw.
+ */
+export async function cancelSubscription(userId: string, id: string): Promise<boolean> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("subscriptions")
+    .update({ active: false })
+    .eq("user_id", userId)
+    .eq("id", id)
+    .eq("active", true)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.warn("[subscription] cancel", error.message);
+    return false;
+  }
+  return data != null;
 }
