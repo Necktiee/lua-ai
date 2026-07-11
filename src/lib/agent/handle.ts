@@ -6,8 +6,8 @@ import { classify } from "@/lib/intent/router";
 import { parseTimes } from "@/lib/intent/time";
 import { remember, recall, listRecent, summarizeForStorage, deleteMemory } from "@/lib/memory/store";
 import { logMessage, recentHistory } from "@/lib/memory/conversation";
-import { addTodo, listTodos, completeByIndex, cancelByIndex, updateByIndex, deleteByIndex } from "@/lib/todo/repo";
-import { scheduleReminder } from "@/lib/remind/schedule";
+import { addTodo, listTodos, completeByIndex, cancelByIndex, updateByIndex, deleteByIndex, updateTodo } from "@/lib/todo/repo";
+import { scheduleReminder, cancelReminder } from "@/lib/remind/schedule";
 import { createEvent, listEvents, findConflicts } from "@/lib/calendar/events";
 import { touchUser } from "@/lib/db/client";
 import { BANGKOK } from "@/lib/tz";
@@ -70,7 +70,8 @@ export async function handle(input: HandleInput): Promise<Reply> {
     reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
   }
 
-  await logMessage(userId, "assistant", typeof reply === "string" ? reply : reply.text);
+  // Assistant message is logged by the webhook route AFTER delivery so the
+  // `delivered` column reflects actual LINE delivery status.
   return reply;
 }
 
@@ -147,11 +148,12 @@ async function dispatch(
           const dueMs = new Date(startIso).getTime();
           const remindMs = Math.min(dueMs - 60 * 60 * 1000, dueMs);
           const remindAt = new Date(Math.max(remindMs, Date.now() + 60_000)).toISOString();
-          await scheduleReminder({
+          const reminder = await scheduleReminder({
             userId: input.userId,
             message: `📌 งานใกล้ถึงกำหนด: "${title}" (${fmtThaiDate(startIso, tz)})`,
             fireAt: remindAt,
           });
+          await updateTodo(input.userId, t.id, { reminderId: reminder.id });
         } catch (e) {
           console.warn("[agent] todo auto-remind failed", (e as Error).message);
         }
@@ -181,6 +183,9 @@ async function dispatch(
       }
       const t = await completeByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
+      if (t.reminder_id) {
+        try { await cancelReminder(t.reminder_id); } catch (e) { console.warn("[agent] cancel reminder on done", (e as Error).message); }
+      }
       return `เสร็จแล้ว ✅ "${t.title}"`;
     }
 
@@ -194,6 +199,9 @@ async function dispatch(
       }
       const t = await cancelByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
+      if (t.reminder_id) {
+        try { await cancelReminder(t.reminder_id); } catch (e) { console.warn("[agent] cancel reminder on cancel", (e as Error).message); }
+      }
       return `ยกเลิกแล้ว "${t.title}"`;
     }
 
@@ -220,6 +228,25 @@ async function dispatch(
 
       const t = await updateByIndex(input.userId, idx, patch);
       if (!t) return `ไม่เจองานที่ ${idx}`;
+      // If due date changed, cancel old reminder and schedule a new one
+      if (startIso) {
+        if (t.reminder_id) {
+          try { await cancelReminder(t.reminder_id); } catch (e) { console.warn("[agent] cancel old reminder on update", (e as Error).message); }
+        }
+        try {
+          const dueMs = new Date(startIso).getTime();
+          const remindMs = Math.min(dueMs - 60 * 60 * 1000, dueMs);
+          const remindAt = new Date(Math.max(remindMs, Date.now() + 60_000)).toISOString();
+          const reminder = await scheduleReminder({
+            userId: input.userId,
+            message: `📌 งานใกล้ถึงกำหนด: "${t.title}" (${fmtThaiDate(startIso, tz)})`,
+            fireAt: remindAt,
+          });
+          await updateTodo(input.userId, t.id, { reminderId: reminder.id });
+        } catch (e) {
+          console.warn("[agent] reschedule reminder on update", (e as Error).message);
+        }
+      }
       const priTag = t.priority === 1 ? " 🔴ด่วน" : t.priority === 3 ? " 🟢ไม่รีบ" : "";
       return `แก้แล้ว ✅ งานที่ ${idx}: "${t.title}"${priTag}${t.due_at ? ` (${fmtThaiDate(t.due_at, tz)})` : ""}`;
     }
@@ -235,6 +262,9 @@ async function dispatch(
 
       const t = await deleteByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
+      if (t.reminder_id) {
+        try { await cancelReminder(t.reminder_id); } catch (e) { console.warn("[agent] cancel reminder on delete", (e as Error).message); }
+      }
       return `ลบถาวรแล้ว 🗑 "${t.title}"`;
     }
 

@@ -217,20 +217,49 @@ export async function fetchRecentUnreadEmails(userId: string, sinceMinutesAgo: n
 
 async function alreadyNotifiedEmail(userId: string, gmailMessageId: string): Promise<boolean> {
   const db = requireDb();
+  // Only skip if status is 'sent' or 'skipped'. 'pending' means a previous
+  // push failed and the email should be retried.
   const { data, error } = await db
     .from("email_notified")
     .select("id")
     .eq("user_id", userId)
     .eq("gmail_message_id", gmailMessageId)
+    .in("status", ["sent", "skipped"])
     .maybeSingle();
   if (error) console.warn("[gmail] notified check", error.message);
   return !!data;
 }
 
-async function markEmailNotified(userId: string, gmailMessageId: string): Promise<void> {
+async function markEmailNotified(userId: string, gmailMessageId: string, status: "pending" | "sent" | "skipped" = "sent"): Promise<void> {
   const db = requireDb();
-  const { error } = await db.from("email_notified").insert({ user_id: userId, gmail_message_id: gmailMessageId });
+  // Upsert with status — if row already exists (race), update status
+  const { error } = await db
+    .from("email_notified")
+    .upsert({ user_id: userId, gmail_message_id: gmailMessageId, status }, { onConflict: "user_id,gmail_message_id" });
   if (error && error.code !== "23505") console.warn("[gmail] notified mark", error.message);
+}
+
+/** Update the status of an already-claimed email notification. */
+export async function updateEmailStatus(userId: string, gmailMessageId: string, status: "sent" | "skipped"): Promise<void> {
+  const db = requireDb();
+  const { error } = await db
+    .from("email_notified")
+    .update({ status })
+    .eq("user_id", userId)
+    .eq("gmail_message_id", gmailMessageId);
+  if (error) console.warn("[gmail] updateEmailStatus", error.message);
+}
+
+/** Release a pending email claim so the next cron tick can retry it. */
+export async function releaseEmailClaim(userId: string, gmailMessageId: string): Promise<void> {
+  const db = requireDb();
+  const { error } = await db
+    .from("email_notified")
+    .delete()
+    .eq("user_id", userId)
+    .eq("gmail_message_id", gmailMessageId)
+    .eq("status", "pending");
+  if (error) console.warn("[gmail] releaseEmailClaim", error.message);
 }
 
 export interface UrgentEmailResult {
@@ -262,11 +291,18 @@ export async function checkUrgentEmails(userId: string, sinceMinutesAgo = 15): P
   if (messages.length === 0) return { urgent: [] };
 
   // Skip messages already notified before spending an LLM call on them.
+  // 'pending' status (from a previous failed push) is NOT skipped — retry.
   const fresh: RawMessage[] = [];
   for (const m of messages) {
     if (!(await alreadyNotifiedEmail(userId, m.id))) fresh.push(m);
   }
   if (fresh.length === 0) return { urgent: [] };
+
+  // Claim each fresh email as 'pending' BEFORE classification. This prevents
+  // concurrent cron workers from both classifying and pushing the same email.
+  for (const m of fresh) {
+    await markEmailNotified(userId, m.id, "pending");
+  }
 
   const parsed = fresh.map((m) => ({
     id: m.id,
@@ -299,9 +335,14 @@ export async function checkUrgentEmails(userId: string, sinceMinutesAgo = 15): P
   }
 
   const urgent = parsed.filter((p) => urgentIds.includes(p.id));
-  // Mark ALL fresh messages as notified (not just urgent) so non-urgent ones aren't reclassified every tick.
+  // Mark non-urgent emails as 'skipped' so they aren't reclassified every tick.
+  // Urgent ones stay 'pending' — the cron route marks them 'sent' after
+  // successful LINE push, or deletes the claim to retry on failure.
+  const urgentIdsSet = new Set(urgent.map((u) => u.id));
   for (const m of fresh) {
-    await markEmailNotified(userId, m.id);
+    if (!urgentIdsSet.has(m.id)) {
+      await updateEmailStatus(userId, m.id, "skipped");
+    }
   }
   return { urgent };
 }

@@ -1,11 +1,13 @@
 /**
  * Poll fallback — ดึง reminders ที่เลยเวลาแล้ว แล้ว fire (สำหรับกรณี QStash ไม่ได้ตั้ง).
+ * Also resets stale webhook_events stuck in 'processing' (worker killed mid-process).
  * Cron: Vercel Cron เรียกทุกนาที, หรือ external cron ยิงมา.
  * Protected ด้วย CRON_SECRET header.
  */
 import { authorizeCron } from "@/lib/cron/auth";
 import { filterAllowed } from "@/lib/auth/whitelist";
 import { dueReminders, markFired, releaseFired } from "@/lib/remind/schedule";
+import { staleEvents, resetStale } from "@/lib/webhook/inbox";
 import { pushText } from "@/lib/line";
 import { BANGKOK } from "@/lib/tz";
 
@@ -16,6 +18,18 @@ export const maxDuration = 30;
 export async function GET(req: Request) {
   const denied = authorizeCron(req);
   if (denied) return denied;
+
+  // Reset stale webhook events (stuck in 'processing' > 5 min) back to 'pending'
+  // so they're visible and retryable. Full reprocessing requires push (reply
+  // token expired) and is deferred to Phase 9 observability work.
+  try {
+    const stale = await staleEvents(5, 10);
+    for (const ev of stale) {
+      await resetStale(ev.webhook_event_id);
+    }
+  } catch (e) {
+    console.warn("[poll] stale webhook reset failed", (e as Error).message);
+  }
 
   const due = await dueReminders(20);
   let fired = 0;

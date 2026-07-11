@@ -9,6 +9,7 @@ export interface TodoPatch {
   dueAt?: string | null;
   priority?: 1 | 2 | 3;
   status?: TodoRecord["status"];
+  reminderId?: string | null;
 }
 
 export async function addTodo(
@@ -79,6 +80,7 @@ export async function updateTodo(
     updates.status = patch.status;
     updates.completed_at = patch.status === "done" ? new Date().toISOString() : null;
   }
+  if (patch.reminderId !== undefined) updates.reminder_id = patch.reminderId;
   if (Object.keys(updates).length === 0) return null;
 
   const db = requireDb();

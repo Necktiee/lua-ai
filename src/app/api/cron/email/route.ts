@@ -9,7 +9,7 @@
 import { requireDb } from "@/lib/db/client";
 import { authorizeCron } from "@/lib/cron/auth";
 import { filterAllowed } from "@/lib/auth/whitelist";
-import { checkUrgentEmails } from "@/lib/gmail";
+import { checkUrgentEmails, updateEmailStatus, releaseEmailClaim } from "@/lib/gmail";
 import { remember } from "@/lib/memory/store";
 import { alreadySentToday, recordSentToday, clearSentToday } from "@/lib/cron/dedup";
 import { pushText } from "@/lib/line";
@@ -76,9 +76,17 @@ export async function GET(req: Request) {
             userId,
             `🔴 เมลด่วนที่อาจต้องรีบตอบ\n\nจาก: ${mail.from}\nเรื่อง: ${mail.subject}\n${mail.snippet.slice(0, 150)}\n\nพิมพ์ "สรุปเมล" เพื่อดูรายละเอียด หรือ "ตอบเมล ..." เพื่อร่างคำตอบ`,
           );
-          if (delivered) notified++;
+          if (delivered) {
+            await updateEmailStatus(userId, mail.id, "sent");
+            notified++;
+          } else {
+            // Push failed — release the pending claim so next cron tick retries
+            await releaseEmailClaim(userId, mail.id);
+          }
         } catch (e) {
           console.error("[email-cron] notify failed", userId, mail.id, (e as Error).message);
+          // Release claim so it can be retried
+          try { await releaseEmailClaim(userId, mail.id); } catch { /* ignore */ }
         }
       }
     } catch (e) {

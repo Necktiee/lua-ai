@@ -113,6 +113,27 @@ export async function dueReminders(limit = 20): Promise<ReminderRecord[]> {
   return ((data ?? []) as ReminderRecord[]).filter((r) => !/^__\w+__:\d{4}-\d{2}-\d{2}$/.test(r.message));
 }
 
+/**
+ * Cancel a reminder by marking it as fired (so it won't fire again).
+ * Used when a todo is done/cancelled/deleted — the linked auto-reminder
+ * should never fire after the todo is no longer pending.
+ */
+export async function cancelReminder(id: string): Promise<boolean> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("reminders")
+    .update({ fired: true })
+    .eq("id", id)
+    .eq("fired", false)
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    console.warn("[remind] cancelReminder", error.message);
+    return false;
+  }
+  return Boolean(data);
+}
+
 export async function listUpcoming(userId: string, limit = 5): Promise<ReminderRecord[]> {
   const db = requireDb();
   const { data } = await db

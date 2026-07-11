@@ -32,6 +32,8 @@ export interface TodoRecord {
   /** 1 = ด่วน, 2 = ปกติ (default), 3 = ไม่รีบ */
   priority: 1 | 2 | 3;
   status: "pending" | "done" | "cancelled";
+  /** Linked auto-reminder (set when todo_add creates a pre-due reminder). */
+  reminder_id?: string | null;
   created_at: string;
   completed_at?: string | null;
 }
