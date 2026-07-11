@@ -7,7 +7,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "clean": "Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue",
+    "rebuild": "npm run clean && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@line/bot-sdk": "^11.1.0",
@@ -32,11 +36,13 @@
     "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.1.10",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
     "tsx": "^4.23.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

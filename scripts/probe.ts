@@ -17,8 +17,8 @@ async function main() {
         max_tokens: 30,
       });
       console.log("✓", base, r.choices[0].message.content?.slice(0, 80));
-    } catch (e: any) {
-      console.log("✗", base, e.status || "?", (e.message || "").slice(0, 120));
+    } catch (e: unknown) {
+      console.log("✗", base, (e as { status?: number }).status || "?", ((e as Error).message || "").slice(0, 120));
     }
   }
 
@@ -32,8 +32,8 @@ async function main() {
       });
       const r = await c.embeddings.create({ model: m, input: ["test"] });
       console.log("✓", m, "dim=", r.data[0].embedding.length);
-    } catch (e: any) {
-      console.log("✗", m, (e.message || "").slice(0, 140));
+    } catch (e: unknown) {
+      console.log("✗", m, ((e as Error).message || "").slice(0, 140));
     }
   }
 
@@ -43,8 +43,8 @@ async function main() {
     const c = new OpenAI({ baseURL: "https://api.mistral.ai/v1", apiKey: mkey });
     const r = await c.embeddings.create({ model: "mistral-embed", input: ["test"] });
     console.log("✓ mistral-embed dim=", r.data[0].embedding.length);
-  } catch (e: any) {
-    console.log("✗", (e.message || "").slice(0, 140));
+  } catch (e: unknown) {
+    console.log("✗", ((e as Error).message || "").slice(0, 140));
   }
 }
 

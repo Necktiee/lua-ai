@@ -4,10 +4,10 @@
  * - On-demand: "เตรียมตัวประชุม X" → generate brief.
  */
 import { requireDb } from "@/lib/db/client";
-import { recall, listRecent } from "@/lib/memory/store";
+import { recall } from "@/lib/memory/store";
 import { findPerson, getMentionsForPerson } from "@/lib/people/repo";
 import { chat } from "@/lib/llm/pool";
-import type { CalendarEvent, Person } from "@/lib/types";
+import type { CalendarEvent } from "@/lib/types";
 import { BANGKOK } from "@/lib/tz";
 
 function fmtTime(iso: string, timeZone = BANGKOK): string {

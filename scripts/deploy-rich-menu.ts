@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
 const LIFF_ID = process.env.LIFF_ID!;

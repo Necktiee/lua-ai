@@ -27,7 +27,7 @@ import { chat } from "@/lib/llm/pool";
 import { getTodayWeather, weatherToThai } from "@/lib/weather";
 import { BANGKOK, bangkokDayBounds, localDateStr, localDayBounds, localMonthDay, localTomorrowBounds } from "@/lib/tz";
 import { listOpenFollowUps } from "@/lib/followup/repo";
-import type { TodoRecord, CalendarEvent, FollowUp, Person } from "@/lib/types";
+import type { TodoRecord, CalendarEvent, Person } from "@/lib/types";
 
 function fmtTime(iso: string, timeZone: string): string {
   const d = new Date(iso);
@@ -198,10 +198,9 @@ export async function generateDailyBriefing(userId: string, timeZone = BANGKOK):
 // EVENING REVIEW
 // =============================================================
 export async function generateEveningReview(userId: string, timeZone = BANGKOK): Promise<string> {
-  const [completed, pending, events, recent] = await Promise.all([
+  const [completed, pending, recent] = await Promise.all([
     getTodosCompletedToday(userId, timeZone),
     getPendingTodos(userId),
-    getTodayCalendarEvents(userId, timeZone),
     listRecent(userId, 10),
   ]);
 

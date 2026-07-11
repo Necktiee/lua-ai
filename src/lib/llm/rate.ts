@@ -15,7 +15,6 @@ interface RateState {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __lekhaRateState: RateState | undefined;
 }
 
