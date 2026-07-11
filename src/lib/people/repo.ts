@@ -6,6 +6,73 @@ import { requireDb, touchUser } from "@/lib/db/client";
 import { chat } from "@/lib/llm/pool";
 import type { Person } from "@/lib/types";
 
+/**
+ * Create a new person with EXACT name identity (no fuzzy partial matching).
+ * Used by dashboard explicit-create. Returns existing row if exact name
+ * already exists (case-insensitive). Throws on DB error.
+ *
+ * This is separate from upsertPerson which does fuzzy partial matching
+ * suitable for passive message extraction — dashboard create must not
+ * accidentally merge "Ann" into "Annabelle".
+ */
+export async function createPerson(args: {
+  userId: string;
+  name: string;
+  aliases?: string[];
+  notes?: Record<string, unknown>;
+  tier?: 1 | 2 | 3 | 4;
+}): Promise<Person> {
+  const db = requireDb();
+  await touchUser(args.userId);
+  const safeName = escapePostgresString(args.name);
+
+  // Check exact name match (case-insensitive) only — no partial matching.
+  const { data: byExact } = await db
+    .from("people")
+    .select("*")
+    .eq("user_id", args.userId)
+    .ilike("name", safeName)
+    .limit(1)
+    .maybeSingle();
+
+  const existing = byExact as Person | null;
+
+  if (existing) {
+    // Exact match → update aliases/notes/tier if provided
+    const mergedAliases = Array.from(new Set([...(existing.aliases ?? []), ...(args.aliases ?? [])]));
+    const mergedNotes = { ...(existing.notes ?? {}), ...(args.notes ?? {}) };
+    const updates: Record<string, unknown> = {
+      aliases: mergedAliases,
+      notes: mergedNotes,
+      last_seen: new Date().toISOString(),
+    };
+    if (args.tier !== undefined) updates.tier = args.tier;
+    const { data, error } = await db
+      .from("people")
+      .update(updates)
+      .eq("id", existing.id)
+      .select()
+      .single();
+    if (error) throw new Error(`people update: ${error.message}`);
+    return data as Person;
+  }
+
+  // No exact match → create new
+  const { data, error } = await db
+    .from("people")
+    .insert({
+      user_id: args.userId,
+      name: args.name,
+      aliases: args.aliases ?? [],
+      notes: args.notes ?? {},
+      tier: args.tier ?? null,
+    })
+    .select()
+    .single();
+  if (error) throw new Error(`people insert: ${error.message}`);
+  return data as Person;
+}
+
 export async function upsertPerson(args: {
   userId: string;
   name: string;

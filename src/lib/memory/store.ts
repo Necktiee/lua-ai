@@ -129,10 +129,11 @@ export async function recall(
   const minSim = filters?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
   const filtered = results.filter((r) => r.similarity >= minSim);
 
-  // If the filters (tag/date/similarity) emptied the vector hits entirely,
-  // fall back to SQL-filtered text search rather than confidently returning
-  // "nothing found" when a plain ILIKE match might still exist.
-  if (filtered.length === 0 && results.length > 0) {
+  // If the vector search returned zero rows OR the similarity filter emptied
+  // the results, fall back to SQL-filtered text search. Previously, zero-row
+  // RPC returns (e.g. null embeddings in DB) skipped fallback entirely,
+  // making those memories permanently undiscoverable.
+  if (filtered.length === 0) {
     return recallTextFallback(db, userId, query, limit, filters);
   }
   return filtered;

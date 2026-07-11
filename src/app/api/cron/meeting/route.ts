@@ -52,48 +52,38 @@ export async function GET(req: Request) {
       for (const event of upcoming) {
         const minsUntil = (new Date(event.start_at).getTime() - Date.now()) / 60_000;
         // Cron ticks every ~10min (QStash schedule) — widen from a narrow 28-32 band
-        // to a window that a 10-min tick can't skip. Dedup is via the `relations`
-        // claim below (per calendar_event, not per-day), so widening is safe.
+        // to a window that a 10-min tick can't skip. Dedup is via the
+        // `meeting_brief_claims` table (per Google event ID), so widening is safe.
         if (minsUntil < 15 || minsUntil > 35) continue;
 
-        const { data: existing } = await db
-          .from("relations")
-          .select("id")
-          .eq("user_id", userId)
-          .eq("from_type", "calendar_event")
-          .eq("from_id", event.id)
-          .eq("relation", "meeting_brief_sent")
-          .maybeSingle();
-        if (existing) continue;
-
-        // Claim before expensive LLM + push to reduce duplicate sends on cron overlap
+        // Claim atomically via unique constraint on (user_id, google_event_id).
+        // Uses the dedicated meeting_brief_claims table with TEXT event IDs
+        // instead of the UUID relations table (Google event IDs are not UUIDs).
         const { data: claim, error: claimErr } = await db
-          .from("relations")
+          .from("meeting_brief_claims")
           .insert({
             user_id: userId,
-            from_type: "calendar_event",
-            from_id: event.id,
-            relation: "meeting_brief_sent",
-            to_type: "calendar_event",
-            to_id: event.id,
+            google_event_id: event.id,
+            status: "claimed",
           })
           .select("id")
-          .single();
-        if (claimErr || !claim) continue;
+          .maybeSingle();
+        if (claimErr || !claim) continue; // already claimed by overlapping cron
 
         let brief: string;
         try {
           brief = await generateMeetingBrief(userId, event);
         } catch (e) {
-          await db.from("relations").delete().eq("id", claim.id);
+          await db.from("meeting_brief_claims").delete().eq("id", claim.id);
           console.error("[meeting-cron] brief failed", userId, (e as Error).message);
           continue;
         }
         const delivered = await pushText(userId, brief);
         if (!delivered) {
-          await db.from("relations").delete().eq("id", claim.id);
+          await db.from("meeting_brief_claims").delete().eq("id", claim.id);
           continue;
         }
+        await db.from("meeting_brief_claims").update({ status: "sent" }).eq("id", claim.id);
         sent++;
       }
     } catch (e) {

@@ -129,8 +129,16 @@ export async function POST(req: Request) {
             : await replyText(replyToken, replyText_);
           if (!delivered) {
             console.warn("[webhook] reply failed, falling back to push", userId);
-            if (replyIsFlex) await pushMessages(userId, reply.messages);
-            else await pushText(userId, replyText_);
+            if (replyIsFlex) {
+              // Try Flex push first; if that also fails, fall back to plain text
+              // so the user is never left without a response.
+              const pushOk = await pushMessages(userId, reply.messages);
+              if (!pushOk) {
+                await pushText(userId, replyText_);
+              }
+            } else {
+              await pushText(userId, replyText_);
+            }
           }
         }
       } catch (e) {

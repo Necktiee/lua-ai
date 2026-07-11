@@ -42,9 +42,14 @@ export async function listTodos(
   let q = db.from("todos").select("*").eq("user_id", userId);
   if (filter === "pending") q = q.eq("status", "pending");
   else if (filter === "done") q = q.eq("status", "done");
+  // Total ordering: priority, due_at, created_at, id — ensures display item N
+  // always resolves to the same row in getByIndex(). Without created_at+id
+  // tie-breakers, equal-priority/equal-due tasks have non-deterministic order.
   const { data, error } = await q
     .order("priority", { ascending: true })
-    .order("due_at", { ascending: true, nullsFirst: false });
+    .order("due_at", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
   if (error) console.warn("[todo] listTodos", error.message);
   return (data ?? []) as TodoRecord[];
 }
@@ -152,6 +157,7 @@ async function getByIndex(
   index: number,
 ): Promise<TodoRecord | null> {
   const db = requireDb();
+  // Must use the SAME total ordering as listTodos for display↔mutation consistency.
   const { data, error } = await db
     .from("todos")
     .select("*")
@@ -159,6 +165,8 @@ async function getByIndex(
     .eq("status", "pending")
     .order("priority", { ascending: true })
     .order("due_at", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .range(index - 1, index - 1)
     .maybeSingle();
   if (error) console.warn("[todo] getByIndex", error.message);

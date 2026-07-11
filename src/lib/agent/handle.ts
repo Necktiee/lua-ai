@@ -172,14 +172,26 @@ async function dispatch(
     }
 
     case "todo_done": {
-      const idx = intent.index ?? 1;
+      let idx = intent.index;
+      if (!idx) {
+        const pending = await listTodos(input.userId, "pending");
+        if (pending.length === 0) return "ไม่มีงานค้างให้ทำเสร็จ";
+        if (pending.length > 1) return "มีหลายงานค้าง ระบุเลขด้วย เช่น 'เสร็จแล้วงานที่ 2'";
+        idx = 1;
+      }
       const t = await completeByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
       return `เสร็จแล้ว ✅ "${t.title}"`;
     }
 
     case "todo_cancel": {
-      const idx = intent.index ?? 1;
+      let idx = intent.index;
+      if (!idx) {
+        const pending = await listTodos(input.userId, "pending");
+        if (pending.length === 0) return "ไม่มีงานค้างให้ยกเลิก";
+        if (pending.length > 1) return "มีหลายงานค้าง ระบุเลขด้วย เช่น 'ยกเลิกงานที่ 2'";
+        idx = 1;
+      }
       const t = await cancelByIndex(input.userId, idx);
       if (!t) return `ไม่เจองานที่ ${idx}`;
       return `ยกเลิกแล้ว "${t.title}"`;

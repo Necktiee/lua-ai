@@ -44,14 +44,15 @@ export async function getGoals(userId: string, status = "active"): Promise<Goal[
 }
 
 /**
- * Soft-delete a goal (sets status='cancelled' to preserve goal_logs history).
+ * Soft-delete a goal (sets status='archived' to preserve goal_logs history).
+ * Schema allows: active, paused, done, archived — NOT 'cancelled'.
  * Returns false if not found. count exact, warn-not-throw.
  */
 export async function deleteGoal(userId: string, id: string): Promise<boolean> {
   const db = requireDb();
   const { data, error } = await db
     .from("goals")
-    .update({ status: "cancelled" })
+    .update({ status: "archived" })
     .eq("user_id", userId)
     .eq("id", id)
     .eq("status", "active")

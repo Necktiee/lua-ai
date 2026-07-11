@@ -190,7 +190,9 @@ export async function recallKnowledge(
 
   const minSim = opts?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
   const filtered = results.filter((r) => r.similarity >= minSim);
-  if (filtered.length === 0 && results.length > 0) {
+  // Fall back to text search when vector results are empty OR filtered out.
+  // Previously, zero-row RPC returns (null embeddings) skipped fallback.
+  if (filtered.length === 0) {
     return recallTextFallback(db, userId, query, limit, opts?.category);
   }
   return filtered;

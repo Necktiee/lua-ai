@@ -450,13 +450,16 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     if (!newTodo.trim() || busy) return;
     setBusy(true);
     try {
-      await fetch("/api/dashboard/todos", {
+      const r = await fetch("/api/dashboard/todos", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: newTodo.trim() }),
       });
+      if (!r.ok) throw new Error("add todo failed");
       setNewTodo("");
       await loadTodos();
+    } catch {
+      // Keep input on failure so user can retry
     } finally {
       setBusy(false);
     }
@@ -552,6 +555,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("create knowledge failed");
       const { knowledge: item } = (await r.json()) as { knowledge: Knowledge };
       setKnowledge((prev) => [item, ...prev]);
+      return true;
+    } catch {
+      return false;
     } finally {
       setBusy(false);
     }
@@ -586,6 +592,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("create person failed");
       const { person } = (await r.json()) as { person: PersonView };
       setPeople((prev) => [person, ...prev]);
+      return true;
+    } catch {
+      return false;
     } finally {
       setBusy(false);
     }
@@ -681,6 +690,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
       if (!r.ok) throw new Error("create goal failed");
       const { goal } = (await r.json()) as { goal: Goal };
       setGoals((prev) => [goal, ...prev]);
+      return true;
+    } catch {
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1211,10 +1223,13 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                             period: newGoalPeriod,
                             targetValue: Number.isFinite(targetNum) && targetNum > 0 ? targetNum : undefined,
                             unit: newGoalUnit.trim() || undefined,
+                          }).then((ok) => {
+                            if (ok) {
+                              setNewGoalTitle("");
+                              setNewGoalTarget("");
+                              setNewGoalUnit("");
+                            }
                           });
-                          setNewGoalTitle("");
-                          setNewGoalTarget("");
-                          setNewGoalUnit("");
                         }
                       }}
                       disabled={busy || !newGoalTitle.trim()}
@@ -1374,9 +1389,12 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                     <button
                       onClick={() => {
                         if (newKbKey.trim() && newKbValue.trim()) {
-                          createKnowledge({ category: newKbCategory, key: newKbKey.trim(), value: newKbValue.trim(), priority: newKbPriority });
-                          setNewKbKey("");
-                          setNewKbValue("");
+                          createKnowledge({ category: newKbCategory, key: newKbKey.trim(), value: newKbValue.trim(), priority: newKbPriority }).then((ok) => {
+                            if (ok) {
+                              setNewKbKey("");
+                              setNewKbValue("");
+                            }
+                          });
                         }
                       }}
                       disabled={busy || !newKbKey.trim() || !newKbValue.trim()}
@@ -1529,8 +1547,9 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                     <button
                       onClick={() => {
                         if (newPersonName.trim()) {
-                          createPerson({ name: newPersonName, tier: newPersonTier });
-                          setNewPersonName("");
+                          createPerson({ name: newPersonName, tier: newPersonTier }).then((ok) => {
+                            if (ok) setNewPersonName("");
+                          });
                         }
                       }}
                       disabled={busy || !newPersonName.trim()}

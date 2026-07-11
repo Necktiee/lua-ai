@@ -9,7 +9,7 @@
 import { requireSessionUser } from "@/lib/auth/require-session";
 import {
   listPeople,
-  upsertPerson,
+  createPerson,
   updatePerson,
   setPersonTier,
   deletePerson,
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
   const aliases = Array.isArray(body.aliases)
     ? body.aliases.filter((a): a is string => typeof a === "string").map((a) => a.trim()).filter(Boolean)
     : [];
-  const person = await upsertPerson({
+  const person = await createPerson({
     userId,
     name: body.name.trim(),
     aliases,

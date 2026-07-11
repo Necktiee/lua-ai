@@ -120,7 +120,7 @@ function compactNotes(notes: Record<string, unknown>): string {
   const entries = Object.entries(notes)
     .filter(([, v]) => v !== null && v !== undefined && v !== "")
     .slice(0, 2)
-    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+    .map(([k, v]) => `${esc(k)}: ${esc(typeof v === "string" ? v : JSON.stringify(v))}`);
   return entries.length ? ` — ${entries.join("; ")}` : "";
 }
 
