@@ -22,6 +22,12 @@ export interface MemoryRecord {
   /** flexible tags: decision, expense, receipt, travel, meeting... */
   tags?: string[];
   created_at: string;
+  /** Phase 4: provenance + dedup + embedding lifecycle */
+  source_type?: string;
+  source_id?: string | null;
+  content_hash?: string | null;
+  embedding_model?: string | null;
+  embedding_status?: string;
 }
 
 export interface TodoRecord {

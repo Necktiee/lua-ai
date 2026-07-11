@@ -5,6 +5,13 @@ import { requireDb, touchUser } from "@/lib/db/client";
 import { embedOne } from "@/lib/llm/embed";
 import type { MemoryRecord } from "@/lib/types";
 
+/** SHA-256 content hash for dedup (hex digest). */
+export async function contentHash(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function remember(args: {
   userId: string;
   kind: MemoryRecord["kind"];
@@ -12,14 +19,33 @@ export async function remember(args: {
   raw?: Record<string, unknown>;
   storagePath?: string;
   tags?: string[];
+  sourceType?: string;
+  sourceId?: string;
 }): Promise<MemoryRecord> {
   const db = requireDb();
   await touchUser(args.userId);
+
+  // Content hash for dedup — if a memory with the same hash already exists
+  // for this user, return it instead of creating a duplicate.
+  const hash = await contentHash(args.content);
+  const { data: existing } = await db
+    .from("memory")
+    .select("*")
+    .eq("user_id", args.userId)
+    .eq("content_hash", hash)
+    .maybeSingle();
+  if (existing) return existing as MemoryRecord;
+
   let embedding: number[] | null = null;
+  let embeddingModel: string | null = null;
+  let embeddingStatus = "null";
   try {
     embedding = await embedOne(args.content.slice(0, 8000));
+    embeddingModel = "baai/bge-m3";
+    embeddingStatus = "ok";
   } catch (err) {
     console.warn("[memory] embed failed:", (err as Error).message);
+    embeddingStatus = "failed";
   }
 
   const row = {
@@ -30,6 +56,11 @@ export async function remember(args: {
     storage_path: args.storagePath ?? null,
     embedding: embedding ?? null,
     tags: args.tags ?? [],
+    source_type: args.sourceType ?? "line_text",
+    source_id: args.sourceId ?? null,
+    content_hash: hash,
+    embedding_model: embeddingModel,
+    embedding_status: embeddingStatus,
   };
 
   const { data, error } = await db

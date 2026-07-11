@@ -20,13 +20,15 @@ export interface UpsertKnowledgeArgs {
   value: string;
   priority?: 1 | 2 | 3;
   source?: KnowledgeRecord["source"];
+  sourceType?: string;
+  sourceId?: string;
 }
 
 /**
  * Insert or update a knowledge fact. Unique on (user_id, category, key) so
  * re-stating a fact ("ชื่อจริง" = ...) overwrites instead of duplicating.
- * Embedding is best-effort — a null embedding just means the row is
- * always-inject/list-only and won't surface via semantic recall (priority=3).
+ * When updating, the previous version is archived to knowledge_versions
+ * for audit trail and rollback. Embedding is best-effort with model tracking.
  */
 export async function upsertKnowledge(
   args: UpsertKnowledgeArgs,
@@ -34,11 +36,47 @@ export async function upsertKnowledge(
   const db = requireDb();
   await touchUser(args.userId);
 
+  // Check if a row already exists (for version archiving)
+  const { data: existing } = await db
+    .from("knowledge")
+    .select("*")
+    .eq("user_id", args.userId)
+    .eq("category", args.category)
+    .eq("key", args.key)
+    .maybeSingle();
+
+  // Archive old version if key or value is changing
+  if (existing) {
+    const old = existing as KnowledgeRecord;
+    if (old.value !== args.value || old.key !== args.key) {
+      try {
+        await db.from("knowledge_versions").insert({
+          knowledge_id: old.id,
+          user_id: args.userId,
+          key: old.key,
+          value: old.value,
+          category: old.category,
+          priority: old.priority,
+          source: old.source,
+          embedding_model: (old as KnowledgeRecord & { embedding_model?: string }).embedding_model ?? null,
+          archived_reason: "updated",
+        });
+      } catch (e) {
+        console.warn("[kb] archive old version failed", (e as Error).message);
+      }
+    }
+  }
+
   let embedding: number[] | null = null;
+  let embeddingModel: string | null = null;
+  let embeddingStatus = "null";
   try {
     embedding = await embedOne(`${args.key}: ${args.value}`.slice(0, 8000));
+    embeddingModel = "baai/bge-m3";
+    embeddingStatus = "ok";
   } catch (err) {
     console.warn("[kb] embed failed:", (err as Error).message);
+    embeddingStatus = "failed";
   }
 
   const row = {
@@ -49,6 +87,12 @@ export async function upsertKnowledge(
     priority: args.priority ?? 2,
     source: args.source ?? "user",
     embedding: embedding ?? null,
+    source_type: args.sourceType ?? "user",
+    source_id: args.sourceId ?? null,
+    content_hash: null,
+    embedding_model: embeddingModel,
+    embedding_status: embeddingStatus,
+    superseded_by: null,
   };
 
   const { data, error } = await db
