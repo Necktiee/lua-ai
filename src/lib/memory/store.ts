@@ -98,6 +98,70 @@ export interface SearchResult {
 
 const DEFAULT_MIN_SIMILARITY = 0.3;
 
+/**
+ * Hybrid recall — uses the hybrid_memory_search RPC which fuses FTS + vector
+ * search using Reciprocal Rank Fusion (RRF). Falls back to the original
+ * recall() (vector-only + ILIKE) if the RPC fails.
+ */
+export async function recallHybrid(
+  userId: string,
+  query: string,
+  limit = 5,
+  filters?: RecallFilters,
+  precomputedVec?: number[],
+): Promise<SearchResult[]> {
+  const db = requireDb();
+
+  let vec: number[];
+  if (precomputedVec) {
+    vec = precomputedVec;
+  } else {
+    try {
+      vec = await embedOne(query.slice(0, 8000));
+    } catch {
+      return recall(userId, query, limit, filters);
+    }
+  }
+
+  const vecStr = `[${vec.join(",")}]`;
+  const { data, error } = await db.rpc("hybrid_memory_search", {
+    query_text: query.slice(0, 8000),
+    query_embedding: vecStr,
+    query_user: userId,
+    match_count: limit,
+    query_tag: filters?.tag ?? null,
+    query_start: filters?.startDate ?? null,
+    query_end: filters?.endDate ?? null,
+  });
+
+  if (error || !data) {
+    return recall(userId, query, limit, filters, vec);
+  }
+
+  const results: SearchResult[] = (data ?? []).map(
+    (r: Record<string, unknown>) => ({
+      memory: {
+        id: r.id as string,
+        user_id: userId,
+        kind: r.kind as MemoryRecord["kind"],
+        content: r.content as string,
+        raw: r.raw as Record<string, unknown>,
+        storage_path: r.storage_path as string | null,
+        tags: r.tags as string[],
+        created_at: r.created_at as string,
+      } as MemoryRecord,
+      similarity: Number(r.rrf_score ?? r.similarity ?? 0),
+    }),
+  );
+
+  const minSim = filters?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
+  const filtered = results.filter((r) => r.similarity >= minSim);
+  if (filtered.length === 0 && results.length === 0) {
+    return recallTextFallback(db, userId, query, limit, filters);
+  }
+  return filtered.length > 0 ? filtered : results;
+}
+
 export async function recall(
   userId: string,
   query: string,

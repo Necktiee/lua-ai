@@ -174,6 +174,69 @@ const DEFAULT_MIN_SIMILARITY = 0.3;
  * memory/store.ts recall(): embed → match_knowledge RPC → min-sim floor →
  * ILIKE fallback when embedding or vector search yields nothing.
  */
+
+/**
+ * Hybrid recall — uses the hybrid_knowledge_search RPC which fuses FTS +
+ * vector search using RRF. Falls back to recallKnowledge() on RPC failure.
+ */
+export async function recallKnowledgeHybrid(
+  userId: string,
+  query: string,
+  limit = 5,
+  opts?: {
+    category?: KnowledgeCategory;
+    minSimilarity?: number;
+    precomputedVec?: number[];
+  },
+): Promise<KnowledgeSearchResult[]> {
+  const db = requireDb();
+
+  let vec: number[];
+  if (opts?.precomputedVec) {
+    vec = opts.precomputedVec;
+  } else {
+    try {
+      vec = await embedOne(query.slice(0, 8000));
+    } catch {
+      return recallKnowledge(userId, query, limit, opts);
+    }
+  }
+
+  const vecStr = `[${vec.join(",")}]`;
+  const { data, error } = await db.rpc("hybrid_knowledge_search", {
+    query_text: query.slice(0, 8000),
+    query_embedding: vecStr,
+    query_user: userId,
+    match_count: limit,
+    query_category: opts?.category ?? null,
+  });
+
+  if (error || !data) {
+    return recallKnowledge(userId, query, limit, opts);
+  }
+
+  const results: KnowledgeSearchResult[] = (data ?? []).map(
+    (r: Record<string, unknown>) => ({
+      knowledge: {
+        id: r.id as string,
+        user_id: userId,
+        category: r.category as KnowledgeCategory,
+        key: r.key as string,
+        value: r.value as string,
+        priority: r.priority as 1 | 2 | 3,
+        source: r.source as KnowledgeRecord["source"],
+        created_at: r.created_at as string,
+        updated_at: r.updated_at as string,
+      } as KnowledgeRecord,
+      similarity: Number(r.rrf_score ?? r.similarity ?? 0),
+    }),
+  );
+
+  const minSim = opts?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
+  const filtered = results.filter((r) => r.similarity >= minSim);
+  return filtered.length > 0 ? filtered : results;
+}
+
 export async function recallKnowledge(
   userId: string,
   query: string,

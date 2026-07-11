@@ -17,8 +17,8 @@
  * <memory>) per Anthropic prompting guidance so the model can cleanly separate
  * instructions from data.
  */
-import { listAlwaysInject, recallKnowledge } from "@/lib/kb/repo";
-import { recall, listRecent } from "@/lib/memory/store";
+import { listAlwaysInject, recallKnowledgeHybrid } from "@/lib/kb/repo";
+import { recallHybrid, listRecent } from "@/lib/memory/store";
 import { listTodos } from "@/lib/todo/repo";
 import { listUpcoming } from "@/lib/remind/schedule";
 import { listPeople } from "@/lib/people/repo";
@@ -65,6 +65,15 @@ function esc(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/** Rough token estimate (~4 chars per token for mixed Thai/English). */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Context token budget — keeps prompt bounded for cheap models. */
+const MAX_KB_ALWAYS_TOKENS = 800;
+const MAX_MEMORY_TOKENS = 1500;
+
 // ─── L2 PROFILE (KB) ────────────────────────────────────────────
 function formatKnowledge(rows: KnowledgeRecord[]): string {
   if (rows.length === 0) return "";
@@ -89,16 +98,27 @@ function formatKnowledge(rows: KnowledgeRecord[]): string {
     arr.push(`${r.key}: ${r.value}`);
     byCat.set(r.category, arr);
   }
+  // Token-budgeted: priority 1 (SOP, profile) first, then priority 2 if room
   const parts: string[] = [];
+  let usedTokens = 0;
   for (const cat of order) {
     const items = byCat.get(cat);
     if (!items || items.length === 0) continue;
+    const catLines: string[] = [];
+    for (const item of items) {
+      const lineTokens = estimateTokens(item);
+      if (usedTokens + lineTokens > MAX_KB_ALWAYS_TOKENS) break;
+      catLines.push(`- ${esc(item)}`);
+      usedTokens += lineTokens;
+    }
+    if (catLines.length === 0) continue;
     const tag = cat === "sop" ? ' category="sop"' : "";
     parts.push(
       `<knowledge${tag} type="${label[cat]}">\n` +
-        items.map((i) => `- ${esc(i)}`).join("\n") +
+        catLines.join("\n") +
         `\n</knowledge>`,
     );
+    if (usedTokens >= MAX_KB_ALWAYS_TOKENS) break;
   }
   return parts.join("\n");
 }
@@ -142,7 +162,7 @@ function formatMemory(
   relevant: { memory: MemoryRecord }[],
   recent: MemoryRecord[],
 ): string {
-  // dedup by id, relevance first then recency, cap to keep tokens bounded
+  // dedup by id, relevance first then recency, token-budgeted
   const seen = new Set<string>();
   const merged: MemoryRecord[] = [];
   for (const r of relevant) {
@@ -158,18 +178,23 @@ function formatMemory(
     }
   }
   if (merged.length === 0) return "";
-  const lines = merged
-    .slice(0, 8)
-    .map((m) => {
-      const date = new Date(m.created_at).toLocaleDateString("th-TH", {
-        day: "numeric",
-        month: "short",
-        timeZone: BANGKOK,
-      });
-      return `- [${date}] ${esc(m.content)}`;
-    })
-    .join("\n");
-  return `<memory>\n${lines}\n</memory>`;
+  const lines: string[] = [];
+  let usedTokens = 0;
+  for (const m of merged) {
+    const date = new Date(m.created_at).toLocaleDateString("th-TH", {
+      day: "numeric",
+      month: "short",
+      timeZone: BANGKOK,
+    });
+    const line = `- [${date}] ${esc(m.content)}`;
+    const lineTokens = estimateTokens(line);
+    if (usedTokens + lineTokens > MAX_MEMORY_TOKENS) break;
+    lines.push(line);
+    usedTokens += lineTokens;
+    if (lines.length >= 8) break;
+  }
+  if (lines.length === 0) return "";
+  return `<memory>\n${lines.join("\n")}\n</memory>`;
 }
 
 // ─── L3 STATE (live) ────────────────────────────────────────────
@@ -228,17 +253,17 @@ export async function buildAgentContext(args: BuildContextArgs): Promise<string>
       }),
       q
         ? vecPromise
-            .then((vec) => recallKnowledge(userId, q, 4, { precomputedVec: vec }))
+            .then((vec) => recallKnowledgeHybrid(userId, q, 4, { precomputedVec: vec }))
             .catch((e) => {
-              console.warn("[context] kb recall", (e as Error).message);
+              console.warn("[context] kb hybrid recall", (e as Error).message);
               return [];
             })
         : Promise.resolve([]),
       q
         ? vecPromise
-            .then((vec) => recall(userId, q, 6, undefined, vec))
+            .then((vec) => recallHybrid(userId, q, 6, undefined, vec))
             .catch((e) => {
-              console.warn("[context] mem recall", (e as Error).message);
+              console.warn("[context] mem hybrid recall", (e as Error).message);
               return [];
             })
         : Promise.resolve([]),
