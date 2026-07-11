@@ -181,15 +181,64 @@ export async function listRecent(userId: string, limit = 10): Promise<MemoryReco
   return (data ?? []) as MemoryRecord[];
 }
 
+/**
+ * Delete memory entries that originated from a specific LINE message ID.
+ * Used by LINE unsend handling — when a user unsends a message, all derived
+ * data (memory, attachments) should be cleaned up.
+ * The message ID is stored in the `raw` jsonb field.
+ */
+export async function deleteMemoryByMessageId(userId: string, messageId: string): Promise<number> {
+  const db = requireDb();
+  // Find memories where raw contains the LINE message ID
+  // The raw field stores { lineMessageId: "..." } for text/image/audio/file
+  const { data: rows, error: findErr } = await db
+    .from("memory")
+    .select("id,storage_path")
+    .eq("user_id", userId)
+    .contains("raw", { lineMessageId: messageId });
+  if (findErr) {
+    console.warn("[memory] deleteByMessageId find", findErr.message);
+    return 0;
+  }
+  const memories = (rows ?? []) as Array<{ id: string; storage_path?: string | null }>;
+  if (memories.length === 0) return 0;
+
+  // Delete each memory (with attachment cleanup)
+  for (const m of memories) {
+    await deleteMemory(userId, m.id);
+  }
+  return memories.length;
+}
+
 export async function deleteMemory(userId: string, id: string): Promise<boolean> {
   const db = requireDb();
+  // Fetch storage_path before deleting so we can clean up the Storage object
+  const { data: row } = await db
+    .from("memory")
+    .select("storage_path")
+    .eq("user_id", userId)
+    .eq("id", id)
+    .maybeSingle();
+  const storagePath = (row as { storage_path?: string | null } | null)?.storage_path ?? null;
+
   const { error, count } = await db
     .from("memory")
     .delete({ count: "exact" })
     .eq("user_id", userId)
     .eq("id", id);
   if (error) console.warn("[memory] delete", error.message);
-  return (count ?? 0) > 0;
+  const deleted = (count ?? 0) > 0;
+
+  // Best-effort Storage cleanup — don't fail the memory deletion if Storage fails
+  if (deleted && storagePath) {
+    try {
+      const { deleteAttachment } = await import("@/lib/storage");
+      await deleteAttachment(storagePath);
+    } catch (e) {
+      console.warn("[memory] attachment cleanup failed", (e as Error).message);
+    }
+  }
+  return deleted;
 }
 
 /** สรุปข้อความยาวให้เป็นประโยคสั้น เก็บ embed ได้แม่นขึ้น */

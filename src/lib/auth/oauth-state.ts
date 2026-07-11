@@ -1,8 +1,15 @@
 /**
  * Signed OAuth state — binds Google OAuth flow to LINE userId.
- * state format: base64url(userId).base64url(hmac-sha256)
+ *
+ * Phase 3: state is now one-time-use via a server-stored nonce.
+ * signOAuthState generates a random nonce, stores its hash in oauth_nonces.
+ * verifyOAuthState consumes the nonce (delete by hash) — if no row was
+ * deleted, the state was already used or invalid.
+ *
+ * state format: base64url(userId|exp|source|nonce).base64url(hmac-sha256)
  */
 import { env } from "@/lib/env";
+import { requireDb } from "@/lib/db/client";
 
 function secret(): string {
   const s = env.LINE_CHANNEL_SECRET || env.CRON_SECRET;
@@ -29,31 +36,59 @@ async function hmac(data: string): Promise<string> {
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-/** source บอกว่า flow เริ่มจากไหน — ใช้ตัดสินว่า callback ควร redirect กลับ /liff หรือโชว์ plain text (chat) */
 export type OAuthStateSource = "chat" | "liff";
 
-function encodePayload(userId: string, source: OAuthStateSource): string {
+function encodePayload(userId: string, source: OAuthStateSource, nonce: string): string {
   const exp = Date.now() + STATE_TTL_MS;
-  return `${userId}|${exp}|${source}`;
+  return `${userId}|${exp}|${source}|${nonce}`;
 }
 
-function decodePayload(raw: string): { userId: string; exp: number; source: OAuthStateSource } | null {
+function decodePayload(raw: string): { userId: string; exp: number; source: OAuthStateSource; nonce: string } | null {
   const parts = raw.split("|");
-  if (parts.length < 2) return null;
+  if (parts.length < 3) return null;
   const userId = parts[0];
   const exp = Number(parts[1]);
-  // state เก่า (ก่อนมี source) จะมีแค่ 2 ส่วน — ถือว่ามาจาก chat
   const source: OAuthStateSource = parts[2] === "liff" ? "liff" : "chat";
-  if (!userId || !Number.isFinite(exp)) return null;
-  return { userId, exp, source };
+  const nonce = parts[3] ?? "";
+  if (!userId || !Number.isFinite(exp) || !nonce) return null;
+  return { userId, exp, source, nonce };
 }
 
+async function hashNonce(nonce: string): Promise<string> {
+  const data = new TextEncoder().encode(nonce);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/**
+ * Create a signed OAuth state with a one-time nonce.
+ * The nonce is stored server-side; it can only be used once.
+ */
 export async function signOAuthState(userId: string, source: OAuthStateSource = "chat"): Promise<string> {
-  const payload = encodePayload(userId, source);
+  const nonce = crypto.randomUUID() + crypto.randomUUID();
+  const nonceHash = await hashNonce(nonce);
+  const exp = Date.now() + STATE_TTL_MS;
+
+  const db = requireDb();
+  await db.from("oauth_nonces").insert({
+    nonce_hash: nonceHash,
+    user_id: userId,
+    source,
+    expires_at: new Date(exp).toISOString(),
+  });
+
+  const payload = encodePayload(userId, source, nonce);
   const sig = await hmac(payload);
   return `${btoa(payload).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}.${sig}`;
 }
 
+/**
+ * Verify a signed OAuth state AND consume its one-time nonce.
+ * Returns null if the state is invalid, expired, or already consumed.
+ */
 export async function verifyOAuthState(
   state: string,
 ): Promise<{ userId: string; source: OAuthStateSource } | null> {
@@ -71,6 +106,23 @@ export async function verifyOAuthState(
   if (!timingSafeEqual(sig, expected)) return null;
   const parsed = decodePayload(raw);
   if (!parsed || parsed.exp < Date.now()) return null;
+
+  // Consume the one-time nonce
+  const nonceHash = await hashNonce(parsed.nonce);
+  const db = requireDb();
+  const { data, error } = await db
+    .from("oauth_nonces")
+    .delete()
+    .eq("nonce_hash", nonceHash)
+    .eq("user_id", parsed.userId)
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    console.warn("[oauth-state] nonce consume", error.message);
+    return null;
+  }
+  if (!data) return null;
+
   return { userId: parsed.userId, source: parsed.source };
 }
 

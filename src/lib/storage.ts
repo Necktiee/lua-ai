@@ -44,6 +44,23 @@ export async function uploadAttachment(
   return `${BUCKET}/${path}`;
 }
 
+/**
+ * Delete an attachment from Storage by its storage_path.
+ * storage_path format: "attachments/<userId>/<messageId><ext>"
+ * Returns true if deleted, false if not found or error (warn-not-throw).
+ */
+export async function deleteAttachment(storagePath: string): Promise<boolean> {
+  if (!storagePath || !storagePath.startsWith(`${BUCKET}/`)) return false;
+  const db = requireDb();
+  const path = storagePath.slice(`${BUCKET}/`.length);
+  const { error } = await db.storage.from(BUCKET).remove([path]);
+  if (error) {
+    console.warn("[storage] delete failed", error.message);
+    return false;
+  }
+  return true;
+}
+
 function guessExt(contentType: string): string {
   const map: Record<string, string> = {
     "image/jpeg": ".jpg",

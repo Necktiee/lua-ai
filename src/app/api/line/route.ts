@@ -42,6 +42,7 @@ interface LineEvent {
     id: string;
     text?: string;
   };
+  unsend?: { messageId: string };
 }
 
 export async function POST(req: Request) {
@@ -64,6 +65,21 @@ export async function POST(req: Request) {
   // Duplicates (same webhookEventId) are silently skipped.
   const newEventIds: string[] = [];
   for (const ev of events) {
+    // Handle unsend events — delete/tombstone derived data
+    if (ev.type === "unsend" && ev.source?.userId && ev.unsend?.messageId) {
+      const webhookEventId = ev.webhookEventId ?? `unsend-${ev.unsend.messageId}-${Date.now()}`;
+      const inserted = await receiveEvent({
+        webhookEventId,
+        userId: ev.source.userId,
+        sourceType: "user",
+        messageType: "unsend",
+        messageId: ev.unsend.messageId,
+        textContent: "",
+      });
+      if (inserted) newEventIds.push(webhookEventId);
+      continue;
+    }
+
     if (ev.type !== "message") continue;
     const webhookEventId = ev.webhookEventId ?? ev.message?.id ?? crypto.randomUUID();
     const userId = ev.source?.userId ?? undefined;
@@ -111,6 +127,18 @@ async function processEvent(webhookEventId: string): Promise<void> {
 
     const text = claimed.text_content ?? "";
     const replyToken = claimed.reply_token ?? undefined;
+
+    // Handle unsend event — delete derived data for the unsent message
+    if (claimed.message_type === "unsend" && claimed.message_id) {
+      try {
+        const { deleteMemoryByMessageId } = await import("@/lib/memory/store");
+        await deleteMemoryByMessageId(userId, claimed.message_id);
+      } catch (e) {
+        console.warn("[webhook] unsend cleanup failed", (e as Error).message);
+      }
+      await markDone(webhookEventId);
+      return;
+    }
 
     await startLoadingAnimation(userId, 20);
 
