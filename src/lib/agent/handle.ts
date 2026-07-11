@@ -719,6 +719,40 @@ async function dispatch(
       return `ลบให้แล้วครับ 🗑️ [${kbCategoryLabel(target.category)}]\n${target.key}: ${target.value}`;
     }
 
+    case "plan": {
+      const { validatePlan } = await import("@/lib/agent/planner");
+      const plan = validatePlan(intent.steps ?? []);
+      if (!plan) {
+        return "ไม่เข้าใจสิ่งที่ต้องทำหลายขั้นตอน — ลองบอกทีละอย่าง เช่น 'เพิ่มงาน X' ก่อน แล้วค่อย 'เตือนพรุ่งนี้ 9 โมง'";
+      }
+      // If any step is destructive (R2), ask for confirmation before executing
+      if (plan.requiresConfirmation) {
+        const stepList = plan.steps.map((s, i) => `${i + 1}. ${s.action}: ${s.text}`).join("\n");
+        return `ต้องทำ ${plan.steps.length} ขั้นตอน — มีบางขั้นที่ลบ/แก้ข้อมูลถาวร ยืนยันก่อนนะ:\n${stepList}\n\nพิมพ์ "ยืนยัน" เพื่อทำต่อ`;
+      }
+      // Execute all steps sequentially
+      const results: string[] = [];
+      for (const step of plan.steps) {
+        try {
+          const stepIntent = {
+            action: step.action,
+            text: step.text,
+            query: step.query,
+            index: step.index,
+            priority: step.priority,
+            tier: step.tier,
+            raw: step.text,
+          };
+          const result = await dispatch(stepIntent, input, history);
+          results.push(typeof result === "string" ? result : result.text);
+        } catch (e) {
+          results.push(`⚠️ ขั้นที่ ${plan.steps.indexOf(step) + 1} ล้มเหลว: ${(e as Error).message}`);
+          break;
+        }
+      }
+      return results.join("\n\n");
+    }
+
     case "chat":
     default:
       return await chatReply(input, history);

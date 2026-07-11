@@ -55,7 +55,9 @@ export type Action =
   | "kb_ask" // "รู้อะไรเกี่ยวกับฉันบ้าง", "ฉันชอบอะไร", "โฮชิจำอะไรได้บ้าง"
   | "kb_forget" // "ลืมข้อ 2", "ลบข้อมูลที่ว่าฉันชอบ...", "ที่จำว่าฉันชื่อ X ผิด ลบออก"
   // Phase 12 — Contact tiers (who matters most). Adapted from secretary-agent.
-  | "people_set_tier"; // "ตั้ง คุณแม่ เป็น P1", "คุณสมชายสำคัญที่สุด", "ปรับคนนี้เป็น P4"
+  | "people_set_tier" // "ตั้ง คุณแม่ เป็น P1", "คุณสมชายสำคัญที่สุด", "ปรับคนนี้เป็น P4"
+  // Phase 7 — Typed multi-step planner for compound requests
+  | "plan"; // "เพิ่มงาน แล้วเตือนพรุ่งนี้ แล้วลงปฏิทิน" → steps[]
 
 export interface Intent {
   action: Action;
@@ -69,6 +71,8 @@ export interface Intent {
   priority?: 1 | 2 | 3;
   /** สำหรับ people_set_tier — ระดับสำคัญของคน (1=สำคัญที่สุด .. 4=ภายนอก/เย็น) */
   tier?: 1 | 2 | 3 | 4;
+  /** สำหรับ plan — bounded multi-step plan */
+  steps?: unknown[];
   raw: string;
 }
 
@@ -112,6 +116,7 @@ Actions:
 - kb_ask: ถามว่าเลขาจำ/รู้อะไรเกี่ยวกับตัวเจ้าของบ้าง ("รู้อะไรเกี่ยวกับฉันบ้าง", "โฮชิจำอะไรได้บ้าง", "ฉันชอบอะไร", "ฉันตั้งกฎอะไรไว้")
 - kb_forget: ขอให้ลบ/แก้ข้อมูลถาวรที่จำผิดหรือไม่ใช้แล้ว ("ลืมข้อ 2", "ลบที่จำว่าฉันชอบกาแฟ", "ที่จำว่าฉันชื่อ X ผิด ลบออก", "ไม่ต้องจำแล้วว่า...") — ระบุ index ถ้ามีเลขข้อ ("ข้อ 2"→index 2); ถ้าอ้างถึงเนื้อหา ให้ query=สิ่งที่จะลบ
 - people_set_tier: ตั้ง/ปรับระดับความสำคัญของคนที่เจ้าของรู้จัก ("ตั้ง คุณแม่ เป็น P1", "คุณสมชายสำคัญที่สุด", "ปรับคนนี้เป็น P4", "คนนี้ P2") — query=ชื่อคน, tier=ระดับ (1=สำคัญที่สุด/ครอบครัว/เจ้านาย, 2=สัมพันธ์สำคัญ, 3=ทั่วไป, 4=ภายนอก/เย็น)
+- plan: ผู้ใช้ขอหลายอย่างในข้อความเดียว ("เพิ่มงาน X แล้วเตือนพรุ่งนี้ 9 โมง แล้วลงปฏิทิน") — คืน steps[] array แต่ละ step มี action, text, query, index, priority, tier ตามที่จำเป็น สูงสุด 5 steps
 - chat: คุยทั่วไป / ถามคำถาม / ไม่เข้ากรณีข้างต้น
 - help: ถามว่าทำได้อะไร / ใช้ยังไง
 - delete_recent: ขอลบของล่าสุดที่ส่งมา ("ลบที่พึ่งส่ง", "เอาออก")
@@ -161,6 +166,7 @@ export async function classify(
       index: typeof json.index === "number" ? json.index : undefined,
       priority: [1, 2, 3].includes(json.priority) ? (json.priority as 1 | 2 | 3) : undefined,
       tier: [1, 2, 3, 4].includes(json.tier) ? (json.tier as 1 | 2 | 3 | 4) : undefined,
+      steps: Array.isArray(json.steps) ? json.steps : undefined,
       raw: userText,
     };
     return applyRememberOverride(intent, userText);
@@ -194,5 +200,6 @@ function validAction(a: unknown): a is Action {
     "meeting_list",
     "kb_add","kb_ask","kb_forget",
     "people_set_tier",
+    "plan",
   ].includes(a as string);
 }
