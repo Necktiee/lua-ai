@@ -112,8 +112,12 @@ export async function getUsersDueForBriefing(
     const targetTime = timeCol === "briefing_time" ? row.briefing_time : row.evening_time;
     const target = targetTime?.slice(0, 5) ?? "";
     const tz = row.timezone || BANGKOK;
-    if (target && isWithinCronWindow(localHHMM(now, tz), target)) {
-      result.push({ userId: row.user_id, timezone: tz });
+    try {
+      if (target && isWithinCronWindow(localHHMM(now, tz), target)) {
+        result.push({ userId: row.user_id, timezone: tz });
+      }
+    } catch {
+      // Invalid timezone string — skip this user instead of crashing all crons
     }
   }
   return result;

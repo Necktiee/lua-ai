@@ -59,6 +59,16 @@ export async function PATCH(req: Request) {
     priority: body.priority,
   });
   if (!todo) return Response.json({ error: "todo not found or no changes" }, { status: 404 });
+
+  if (todo.reminder_id && (body.status === "done" || body.status === "cancelled")) {
+    try {
+      const { cancelReminder } = await import("@/lib/remind/schedule");
+      await cancelReminder(todo.reminder_id);
+    } catch (e) {
+      console.warn("[dashboard] reminder cleanup failed", (e as Error).message);
+    }
+  }
+
   return Response.json({ todo });
 }
 
@@ -71,6 +81,15 @@ export async function DELETE(req: Request) {
 
   const todo = await deleteTodo(userId, id);
   if (!todo) return Response.json({ error: "todo not found" }, { status: 404 });
+
+  if (todo.reminder_id) {
+    try {
+      const { cancelReminder } = await import("@/lib/remind/schedule");
+      await cancelReminder(todo.reminder_id);
+    } catch (e) {
+      console.warn("[dashboard] reminder cleanup on delete failed", (e as Error).message);
+    }
+  }
 
   const { createUndoToken } = await import("@/lib/undo/store");
   const undo = await createUndoToken({

@@ -103,7 +103,11 @@ export async function POST(req: Request) {
   // Process only newly inserted events in after().
   after(async () => {
     for (const eventId of newEventIds) {
-      await processEvent(eventId);
+      try {
+        await processEvent(eventId);
+      } catch (e) {
+        console.error("[webhook] after() event processing error", eventId, e);
+      }
     }
   });
 
@@ -149,7 +153,9 @@ async function processEvent(webhookEventId: string): Promise<void> {
       const data = claimed.text_content ?? "";
       try {
         const { handlePostback } = await import("@/lib/agent/postback");
-        const result = await handlePostback(userId, data, webhookEventId);
+        const { canonicalUserId } = await import("@/lib/auth/owner");
+        const ownerId = canonicalUserId(userId);
+        const result = await handlePostback(ownerId, data, webhookEventId);
         if (replyToken) {
           const sent = await replyText(replyToken, result.text);
           if (!sent) await pushText(userId, result.text);
@@ -251,7 +257,11 @@ async function processEvent(webhookEventId: string): Promise<void> {
       }
 
       await logMessage(userId, "assistant", replyText_, { delivered, prompt_versions: getPromptVersions() }, delivered, claimed.trace_id ?? undefined);
-      await markDone(webhookEventId);
+      if (delivered) {
+        await markDone(webhookEventId);
+      } else {
+        await markFailed(webhookEventId, "reply delivery failed (reply+push both failed)");
+      }
     } catch (e) {
       console.error("[webhook] handle error", e);
       const errorMsg = "ขออภัย มีข้อผิดพลาดชั่วคราว ลองใหม่อีกครั้งนะ";

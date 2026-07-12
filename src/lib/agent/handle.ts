@@ -1254,5 +1254,6 @@ async function userTimezone(userId: string): Promise<string> {
   })();
   tzCache.set(userId, promise);
   setTimeout(() => tzCache.delete(userId), 30_000);
+  promise.catch(() => tzCache.delete(userId));
   return promise;
 }

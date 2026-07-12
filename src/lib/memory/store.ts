@@ -305,12 +305,12 @@ export async function listRecent(userId: string, limit = 10): Promise<MemoryReco
 export async function deleteMemoryByMessageId(userId: string, messageId: string): Promise<number> {
   const db = requireDb();
   // Find memories where raw contains the LINE message ID
-  // The raw field stores { lineMessageId: "..." } for text/image/audio/file
+  // The raw field stores { line_message_id: "..." } for attachment memories
   const { data: rows, error: findErr } = await db
     .from("memory")
     .select("id,storage_path")
     .eq("user_id", userId)
-    .contains("raw", { lineMessageId: messageId });
+    .contains("raw", { line_message_id: messageId });
   if (findErr) {
     console.warn("[memory] deleteByMessageId find", findErr.message);
     return 0;

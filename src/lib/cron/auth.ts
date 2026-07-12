@@ -8,10 +8,7 @@ export function authorizeCron(req: Request): Response | null {
   const secret = env.CRON_SECRET;
 
   if (!secret) {
-    if (env.NODE_ENV === "production") {
-      return new Response("cron secret not configured", { status: 503 });
-    }
-    return null;
+    return new Response("cron secret not configured", { status: 503 });
   }
 
   if (auth !== `Bearer ${secret}`) {
