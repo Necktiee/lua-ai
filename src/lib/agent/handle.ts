@@ -14,6 +14,7 @@ import { BANGKOK } from "@/lib/tz";
 import type { ChatTurn } from "@/lib/llm/types";
 import type { LineMessage } from "@/lib/line";
 import { buildTodoListFlex, buildCalendarFlex, buildTextCardFlex, buildHelpFlex, FLEX_COLORS } from "@/lib/flex/builder";
+import { buildHelpSections } from "@/lib/agent/registry";
 
 /**
  * Reply จาก handle() — ปกติเป็น plain string, แต่สำหรับ reply ที่มีค่าสูง
@@ -27,6 +28,10 @@ export interface HandleInput {
   displayName?: string;
   text: string;
   hasAttachment?: boolean;
+  /** LINE webhookEventId — used for mutation idempotency keys */
+  webhookEventId?: string;
+  /** Trace ID for end-to-end correlation across messages, LLM usage, logs */
+  traceId?: string;
   attachment?: {
     kind: "image" | "audio" | "file";
     messageId: string;
@@ -36,6 +41,9 @@ export interface HandleInput {
 }
 
 export async function handle(input: HandleInput): Promise<Reply> {
+  const { createDeadline, DeadlineExceededError } = await import("@/lib/deadline");
+  const deadline = createDeadline();
+
   // Single-owner mode: remap any incoming userId to the canonical owner.
   const { canonicalUserId } = await import("@/lib/auth/owner");
   const userId = canonicalUserId(input.userId);
@@ -52,7 +60,50 @@ export async function handle(input: HandleInput): Promise<Reply> {
   // บันทึกฝั่ง user
   const userTextForLog =
     input.text + (input.attachment ? ` [${input.attachment.kind}]` : "");
-  await logMessage(userId, "user", userTextForLog);
+  await logMessage(userId, "user", userTextForLog, undefined, undefined, input.traceId);
+
+  deadline.throwIfExpired("classify");
+
+  // ── C1: Durable plan confirmation resume + correction ──
+  const trimmedText = input.text.trim().toLowerCase();
+  if (trimmedText === "ยืนยัน" || trimmedText === '"ยืนยัน"' || trimmedText === "confirm") {
+    const { getPendingAction, consumePendingAction, expireStalePendingActions } =
+      await import("@/lib/agent/pending");
+    await expireStalePendingActions(userId);
+    const pending = await getPendingAction(userId);
+    if (pending) {
+      const consumed = await consumePendingAction(pending.id);
+      if (consumed) {
+        const { validatePlan } = await import("@/lib/agent/planner");
+        const rawPlan = consumed.payload as unknown as { steps?: unknown[] };
+        // Re-validate the stored plan to guard against DB payload corruption
+        const plan = rawPlan.steps ? validatePlan(rawPlan.steps) : null;
+        if (!plan) {
+          return "แผนที่บันทึกไว้ไม่ถูกต้อง — ลองสั่งใหม่อีกที";
+        }
+        const { executePlan } = await import("@/lib/agent/plan-exec");
+        const confirmHistory = await recentHistory(userId, 12);
+        const result = await executePlan(plan, canonicalInput, confirmHistory);
+        const lines = [result.summary];
+        for (const r of result.receipts) {
+          if (r.status === "success") lines.push(`✅ ${r.action}: ${r.result ?? ""}`);
+          else if (r.status === "failed") lines.push(`❌ ${r.action}: ${r.error ?? "ล้มเหลว"}`);
+          else lines.push(`⏭️ ${r.action}: ข้าม`);
+        }
+        return lines.join("\n");
+      }
+    }
+    return "ไม่มีคำขอที่รอยืนยัน หรือหมดเวลาแล้ว (5 นาที) — ลองสั่งใหม่อีกที";
+  }
+
+  // Plan correction: cancel pending plan
+  if (trimmedText === "ยกเลิกแผน" || trimmedText === "cancel plan") {
+    const { cancelPendingActions } = await import("@/lib/agent/pending");
+    const cancelled = await cancelPendingActions(userId);
+    return cancelled > 0
+      ? `ยกเลิกแผนที่รอยืนยันแล้ว (${cancelled} แผน)`
+      : "ไม่มีแผนที่รอยืนยันอยู่";
+  }
 
   // classify
   const history = await recentHistory(userId, 12);
@@ -62,12 +113,31 @@ export async function handle(input: HandleInput): Promise<Reply> {
     input.hasAttachment,
   );
 
+  // Mutation idempotency: event + action + target → one business effect
+  const { claimMutation } = await import("@/lib/idempotency/mutation");
+  const target = intent.query ?? intent.text ?? input.text ?? "";
+  const claim = await claimMutation({
+    userId,
+    webhookEventId: input.webhookEventId,
+    action: intent.action,
+    target,
+  });
+  if (claim === "duplicate") {
+    return "คำขอนี้ทำไปแล้วค่ะ (ไม่ทำซ้ำ)";
+  }
+
   let reply: Reply = "";
   try {
+    deadline.throwIfExpired("dispatch");
     reply = await dispatch(intent, canonicalInput, history);
   } catch (err) {
-    console.error("[agent] dispatch error", err);
-    reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
+    if (err instanceof DeadlineExceededError) {
+      console.warn("[agent] deadline exceeded", err.message);
+      reply = "ขออภัยค่ะ ใช้เวลานานเกินไป ลองใหม่อีกทีนะ";
+    } else {
+      console.error("[agent] dispatch error", err);
+      reply = "อุ๊ป มีข้อผิดพลาดภายใน ลองใหม่อีกทีนะ";
+    }
   }
 
   // Assistant message is logged by the webhook route AFTER delivery so the
@@ -75,7 +145,7 @@ export async function handle(input: HandleInput): Promise<Reply> {
   return reply;
 }
 
-async function dispatch(
+export async function dispatch(
   intent: Awaited<ReturnType<typeof classify>>,
   input: HandleInput,
   history: ChatTurn[],
@@ -103,7 +173,8 @@ async function dispatch(
         const projectName = extractProjectName(intent.raw);
         if (projectName) {
           projectTag = `project:${projectName}`;
-          cleanQuery = cleanQuery.replace(new RegExp(projectName, "i"), "").trim() || cleanQuery;
+          const escaped = projectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          cleanQuery = cleanQuery.replace(new RegExp(escaped, "i"), "").trim() || cleanQuery;
         }
       }
       const results = await recall(input.userId, cleanQuery, 5, {
@@ -362,11 +433,19 @@ async function dispatch(
       const { listOpenFollowUps } = await import("@/lib/followup/repo");
       const list = await listOpenFollowUps(input.userId);
       if (list.length === 0) return "ไม่มีอะไรต้องติดตาม 🎉";
-      return "รอติดตาม:\n" +
+      const text = "รอติดตาม:\n" +
         list.map((f, i) => {
           const days = Math.floor((Date.now() - new Date(f.created_at).getTime()) / 86_400_000);
           return `${i + 1}. ${f.subject}${f.waiting_for ? ` (รอ ${f.waiting_for})` : ""} — ${days} วันแล้ว`;
         }).join("\n");
+      const { buildFollowUpListFlex } = await import("@/lib/flex/builder");
+      const flex = buildFollowUpListFlex(list.map((f) => ({
+        id: f.id,
+        subject: f.subject,
+        waitingFor: f.waiting_for,
+        ageDays: Math.floor((Date.now() - new Date(f.created_at).getTime()) / 86_400_000),
+      })));
+      return { text, messages: [flex] };
     }
 
     case "followup_close": {
@@ -409,15 +488,15 @@ async function dispatch(
           | 4
           | undefined);
       if (!tier) {
-        return "ระบุระดับด้วยครับ — P1 (สำคัญที่สุด), P2 (สัมพันธ์สำคัญ), P3 (ทั่วไป), P4 (ภายนอก/เย็น)\nเช่น “ตั้ง คุณแม่ เป็น P1”";
+        return "ระบุระดับด้วยค่ะ — P1 (สำคัญที่สุด), P2 (สัมพันธ์สำคัญ), P3 (ทั่วไป), P4 (ภายนอก/เย็น)\nเช่น “ตั้ง คุณแม่ เป็น P1”";
       }
       const nameQuery = intent.query || intent.text || "";
       if (!nameQuery.trim()) {
-        return "บอกชื่อคนที่จะปรับระดับด้วยครับ เช่น “ตั้ง คุณแม่ เป็น P1”";
+        return "บอกชื่อคนที่จะปรับระดับด้วยค่ะ เช่น “ตั้ง คุณแม่ เป็น P1”";
       }
       const candidates = await findPeople(input.userId, nameQuery);
       if (candidates.length === 0) {
-        return `ยังไม่รู้จักคนชื่อ "${nameQuery}" ครับ — ลองสะกดชื่อใหม่ หรือพูดถึงชื่อนี้ในบทสนทนาก่อนแล้วโฮชิจะจำได้`;
+        return `ยังไม่รู้จักคนชื่อ "${nameQuery}" ค่ะ — ลองสะกดชื่อใหม่ หรือพูดถึงชื่อนี้ในบทสนทนาก่อนแล้วแจ๋วจะจำได้`;
       }
       // Ambiguity guard: never silently mutate the wrong person's tier. If the
       // query matches multiple people, ask the owner to disambiguate instead.
@@ -433,14 +512,14 @@ async function dispatch(
             .slice(0, 6)
             .map((p) => `• ${p.name}`)
             .join("\n");
-          return `ชื่อ "${nameQuery}" ตรงกับหลายคน โปรดระบุให้ชัดเจนขึ้นครับ:\n${list}\n\nเช่น "ตั้ง คุณสมชาย X เป็น P${tier}"`;
+          return `ชื่อ "${nameQuery}" ตรงกับหลายคน โปรดระบุให้ชัดเจนขึ้นค่ะ:\n${list}\n\nเช่น "ตั้ง คุณสมชาย X เป็น P${tier}"`;
         }
       }
       const updated = await setPersonTier(input.userId, target.id, tier);
-      if (!updated) return "ปรับระดับไม่สำเร็จครับ ลองอีกครั้ง";
+      if (!updated) return "ปรับระดับไม่สำเร็จค่ะ ลองอีกครั้ง";
       const label =
         tier === 1 ? "สำคัญที่สุด" : tier === 2 ? "สัมพันธ์สำคัญ" : tier === 4 ? "ภายนอก/เย็น" : "ทั่วไป";
-      return `ตั้งให้แล้วครับ ⭐ P${tier} · ${target.name}\nระดับ: ${label}`;
+      return `ตั้งให้แล้วค่ะ ⭐ P${tier} · ${target.name}\nระดับ: ${label}`;
     }
 
     case "expense_add": {
@@ -500,12 +579,154 @@ async function dispatch(
         `\n≈ ${monthlyTotal.toFixed(0)} บาท/เดือน`;
     }
 
+    case "subscription_cancel": {
+      const { listSubscriptions, cancelSubscription } = await import("@/lib/expense/repo");
+      const list = await listSubscriptions(input.userId);
+      if (list.length === 0) return "ไม่มี subscription ที่ active";
+      const q = (intent.text || intent.raw || "").toLowerCase();
+      const target = list.find((s) => s.name.toLowerCase().includes(q)) ??
+        (intent.index ? list[intent.index - 1] : list.length === 1 ? list[0] : undefined);
+      if (!target) {
+        return "มีหลายตัว ระบุชื่อหรือเลข เช่น 'ยกเลิก Netflix' หรือ 'ยกเลิกอันแรก':\n" +
+          list.map((s, i) => `${i + 1}. ${s.name}`).join("\n");
+      }
+      const ok = await cancelSubscription(input.userId, target.id);
+      return ok ? `ยกเลิกแล้ว ❌ ${target.name}` : "ยกเลิกไม่สำเร็จ ลองอีกครั้ง";
+    }
+
+    case "remind_list": {
+      const { listUpcoming } = await import("@/lib/remind/schedule");
+      const tz = await userTimezone(input.userId);
+      const list = await listUpcoming(input.userId, 10);
+      if (list.length === 0) return "ไม่มีการเตือนที่รออยู่ ⏰";
+      return "⏰ การเตือนที่ตั้งไว้:\n" +
+        list.map((r, i) => `${i + 1}. ${fmtThaiDate(r.fire_at, tz)} — "${r.message}"`).join("\n");
+    }
+
+    case "remind_cancel": {
+      const { cancelReminderByIndex, listUpcoming } = await import("@/lib/remind/schedule");
+      const idx = intent.index;
+      if (!idx) {
+        const list = await listUpcoming(input.userId, 10);
+        if (list.length === 0) return "ไม่มีการเตือนที่รออยู่";
+        if (list.length === 1) {
+          await cancelReminderByIndex(input.userId, 1);
+          return `ยกเลิกแล้ว ❌ "${list[0].message}"`;
+        }
+        return "มีหลายตัว ระบุเลข:\n" +
+          list.map((r, i) => `${i + 1}. ${r.message}`).join("\n");
+      }
+      const target = await cancelReminderByIndex(input.userId, idx);
+      return target ? `ยกเลิกแล้ว ❌ "${target.message}"` : `ไม่เจอการเตือนที่ ${idx}`;
+    }
+
+    case "remind_snooze": {
+      const { snoozeReminderByIndex, listUpcoming } = await import("@/lib/remind/schedule");
+      const tz = await userTimezone(input.userId);
+      const { startIso } = await parseTimes(intent.raw, new Date(), tz);
+      if (!startIso) return "ไม่เข้าใจเวลาที่จะเลื่อน — ลอง 'เลื่อนการเตือนไปอีก 30 นาที'";
+      const idx = intent.index ?? 1;
+      const list = await listUpcoming(input.userId, 10);
+      if (list.length === 0) return "ไม่มีการเตือนที่รออยู่";
+      const snoozed = await snoozeReminderByIndex(input.userId, idx, startIso);
+      return snoozed
+        ? `เลื่อนแล้ว ⏰ "${snoozed.message}" → ${fmtThaiDate(snoozed.fire_at, tz)}`
+        : "เลื่อนไม่สำเร็จ ลองอีกครั้ง";
+    }
+
+    case "expense_list": {
+      const { listExpenses } = await import("@/lib/expense/repo");
+      const list = await listExpenses(input.userId, 10);
+      if (list.length === 0) return "ยังไม่มีค่าใช้จ่ายที่บันทึกไว้";
+      return "💰 ค่าใช้จ่ายล่าสุด:\n" +
+        list.map((e, i) => `${i + 1}. ${e.amount} บาท [${e.category}] ${e.description ?? ""} (${e.expense_date})`).join("\n");
+    }
+
+    case "expense_delete": {
+      const { deleteExpenseByIndex, listExpenses } = await import("@/lib/expense/repo");
+      const list = await listExpenses(input.userId, 10);
+      if (list.length === 0) return "ไม่มีค่าใช้จ่ายให้ลบ";
+      const idx = intent.index ?? (list.length === 1 ? 1 : undefined);
+      if (!idx) {
+        return "มีหลายรายการ ระบุเลข:\n" +
+          list.map((e, i) => `${i + 1}. ${e.amount} บาท [${e.category}] ${e.description ?? ""}`).join("\n");
+      }
+      const target = await deleteExpenseByIndex(input.userId, idx);
+      return target
+        ? `ลบแล้ว 🗑️ ${target.amount} บาท [${target.category}]`
+        : `ไม่เจอค่าใช้จ่ายที่ ${idx}`;
+    }
+
+    case "goal_manage": {
+      const { setGoalStatus, getGoals } = await import("@/lib/goal/repo");
+      const raw = (intent.text || intent.raw || "").toLowerCase();
+      let action: "paused" | "active" | "archived" | "done";
+      if (/พัก|หยุด|pause/.test(raw)) action = "paused";
+      else if (/ทำต่อ|resume|เปิด/.test(raw)) action = "active";
+      else if (/เก็บ|เลิก|archive|ยกเลิก/.test(raw)) action = "archived";
+      else if (/เสร็จ|สำเร็จ|complete|done/.test(raw)) action = "done";
+      else return "ระบุสิ่งที่จะทำ: 'พักเป้า', 'ทำต่อ', 'เก็บเป้า', หรือ 'ทำเสร็จ' — พร้อมเลขหรือชื่อเป้า";
+
+      const goals = await getGoals(input.userId, action === "active" ? "paused" : "active");
+      if (goals.length === 0) return action === "active" ? "ไม่มีเป้าที่พักอยู่" : "ไม่มีเป้าหมาย active";
+      let goal = intent.index ? goals[intent.index - 1] : undefined;
+      if (!goal) {
+        const q = intent.text || "";
+        goal = goals.find((g) => g.title.toLowerCase().includes(q.toLowerCase()));
+      }
+      if (!goal && goals.length === 1) goal = goals[0];
+      if (!goal) {
+        return `มี ${goals.length} เป้า — ระบุชื่อหรือเลข:\n` +
+          goals.map((g, i) => `${i + 1}. ${g.title}`).join("\n");
+      }
+      const updated = await setGoalStatus(input.userId, goal.id, action);
+      const labels: Record<string, string> = { paused: "พักแล้ว ⏸️", active: "ทำต่อ ▶️", archived: "เก็บแล้ว 📦", done: "เสร็จแล้ว ✅" };
+      return updated ? `${labels[action]} "${updated.title}"` : "ไม่สำเร็จ ลองอีกครั้ง";
+    }
+
+    case "journal_add": {
+      const { addJournalEntry } = await import("@/lib/journal/repo");
+      const { getSettings } = await import("@/lib/settings/repo");
+      const settings = await getSettings(input.userId);
+      const content = intent.text || intent.raw;
+      if (!content.trim()) return "เขียนอะไรลงไดอารี่ก่อน — เช่น 'เขียนไดอารี่ วันนี้ดีมาก'";
+      const entry = await addJournalEntry(input.userId, content, new Date(), settings.timezone);
+      return entry ? `บันทึกไดอารี่แล้ว 📓 ${entry.entry_date}` : "บันทึกไม่สำเร็จ ลองอีกครั้ง";
+    }
+
+    case "followup_reopen": {
+      const { reopenFollowUpByIndex } = await import("@/lib/followup/repo");
+      const idx = intent.index;
+      if (!idx) {
+        const db = (await import("@/lib/db/client")).requireDb();
+        const { data } = await db
+          .from("follow_ups")
+          .select("*")
+          .eq("user_id", input.userId)
+          .eq("status", "closed")
+          .order("updated_at", { ascending: false })
+          .limit(10);
+        const closed = (data ?? []) as Array<{ id: string; subject: string }>;
+        if (closed.length === 0) return "ไม่มีเรื่องที่ปิดไปแล้ว";
+        if (closed.length === 1) {
+          const target = await reopenFollowUpByIndex(input.userId, 1);
+          return target ? `เปิดติดตามใหม่ 🔄 "${target.subject}"` : "เปิดใหม่ไม่สำเร็จ";
+        }
+        return "มีหลายเรื่อง ระบุเลข:\n" +
+          closed.map((f, i) => `${i + 1}. ${f.subject}`).join("\n");
+      }
+      const target = await reopenFollowUpByIndex(input.userId, idx);
+      return target
+        ? `เปิดติดตามใหม่ 🔄 "${target.subject}"`
+        : `ไม่เจอเรื่องที่ปิดไปที่ ${idx}`;
+    }
+
     case "journal_show": {
       const { getJournalEntry } = await import("@/lib/journal/repo");
       const { getSettings } = await import("@/lib/settings/repo");
       const settings = await getSettings(input.userId);
       const entry = await getJournalEntry(input.userId, new Date(), settings.timezone);
-      if (!entry) return "ยังไม่มี journal วันนี้ จะสร้างให้ตอน 22:00 อัตโนมัติ หรือพิมพ์ 'สร้าง journal วันนี้'";
+      if (!entry) return "ยังไม่มี journal วันนี้ จะสร้างให้ตอน 22:00 อัตโนมัติ หรือพิมพ์ 'เขียนไดอารี่ ...' เพื่อเขียนเอง";
       return `📓 Journal ${entry.entry_date}\n\n${entry.content}`;
     }
 
@@ -597,7 +818,7 @@ async function dispatch(
       const q = intent.query || intent.text || "ประชุม meeting";
       const results = await recall(input.userId, q, 10, { tag: "meeting" });
       if (results.length === 0) {
-        return "ยังไม่มีบันทึกการประชุมเลย 📋\nส่งสรุปประชุม/บันทึกการประชุมมาได้เลย โฮชิจะจดแท็ก #meeting ให้อัตโนมัติ";
+        return "ยังไม่มีบันทึกการประชุมเลย 📋\nส่งสรุปประชุม/บันทึกการประชุมมาได้เลย แจ๋วจะจดแท็ก #meeting ให้อัตโนมัติ";
       }
       return `📋 สรุปประชุมล่าสุด (${results.length})\n` + formatRecall(results);
     }
@@ -651,12 +872,12 @@ async function dispatch(
         .filter(Boolean)
         .join("\n\n");
       const { chat } = await import("@/lib/llm/pool");
+      const { WEB_SEARCH_SYSTEM } = await import("@/lib/agent/prompts");
       const llmRes = await chat({
         messages: [
           {
             role: "system",
-            content:
-              "คุณคือ 'โฮชิ' เลขาส่วนตัว. ตอบคำถามของผู้ใช้เป็นภาษาไทย กระชับ เข้าใจง่าย โดยอ้างอิงจากข้อมูลค้นเว็บที่ให้มา. ถ้าข้อมูลไม่พอ บอกตรงๆ ว่าไม่แน่ใจ. อย่าแปลวลีทางเทคนิค/ชื่อเฉพาะถ้าเรียกกันเป็นภาษาอังกฤษในไทย. ตอบ 2-5 บรรทัด.",
+            content: WEB_SEARCH_SYSTEM,
           },
           {
             role: "user",
@@ -679,24 +900,28 @@ async function dispatch(
       const { parseKnowledge } = await import("@/lib/kb/parse");
       const parsed = await parseKnowledge(intent.raw);
       if (!parsed) {
-        return "อยากให้ผมจำเรื่องอะไรครับ? ลองบอกชัดๆ เช่น 'จำไว้ว่าผมชื่อ...', 'จำไว้ว่าเวลานัดประชุมให้เผื่อเวลาเดินทาง 30 นาที', หรือ 'จำไว้ว่าแฟนผมชื่อ...'";
+        return "อยากให้ผมจำเรื่องอะไรค่ะ? ลองบอกชัดๆ เช่น 'จำไว้ว่าผมชื่อ...', 'จำไว้ว่าเวลานัดประชุมให้เผื่อเวลาเดินทาง 30 นาที', หรือ 'จำไว้ว่าแฟนผมชื่อ...'";
       }
       const { upsertKnowledge } = await import("@/lib/kb/repo");
-      const k = await upsertKnowledge({
+      const result = await upsertKnowledge({
         userId: input.userId,
         category: parsed.category,
         key: parsed.key,
         value: parsed.value,
         priority: parsed.priority,
       });
-      return `จำไว้แล้วครับ 🧠 [${kbCategoryLabel(k.category)}]\n${k.key}: ${k.value}`;
+      const k = result.knowledge;
+      if (result.previousValue !== undefined) {
+        return `อัปเดตแล้ว 🧠 [${kbCategoryLabel(k.category)}]\n${k.key}: ${k.value}\n\n(เดิม: ${result.previousValue})`;
+      }
+      return `จำไว้แล้วค่ะ 🧠 [${kbCategoryLabel(k.category)}]\n${k.key}: ${k.value}`;
     }
 
     case "kb_ask": {
       const { listKnowledge } = await import("@/lib/kb/repo");
       const rows = await listKnowledge(input.userId);
       if (rows.length === 0) {
-        return "ผมยังไม่รู้จักข้อมูลถาวรอะไรเกี่ยวกับคุณเลยครับ ลองสอนผมดู เช่น 'จำไว้ว่าผมชื่อ...' หรือ 'จำไว้ว่าเวลาตอบอีเมลให้เป็นทางการ'";
+        return "ผมยังไม่รู้จักข้อมูลถาวรอะไรเกี่ยวกับคุณเลยค่ะ ลองสอนผมดู เช่น 'จำไว้ว่าผมชื่อ...' หรือ 'จำไว้ว่าเวลาตอบอีเมลให้เป็นทางการ'";
       }
       return formatKnowledgeList(rows);
     }
@@ -705,18 +930,18 @@ async function dispatch(
       const { listKnowledge, deleteKnowledge } = await import("@/lib/kb/repo");
       const rows = await listKnowledge(input.userId);
       if (rows.length === 0) {
-        return "ยังไม่มีข้อมูลถาวรอะไรให้ลบครับ";
+        return "ยังไม่มีข้อมูลถาวรอะไรให้ลบค่ะ";
       }
       const ordered = orderKnowledge(rows);
       const target = resolveKnowledgeTarget(ordered, intent.index, intent.query || intent.text);
       if (!target) {
-        return `ไม่แน่ใจว่าจะให้ลบข้อไหนครับ ลองดูรายการก่อนด้วย 'รู้อะไรเกี่ยวกับผมบ้าง' แล้วบอกเลขข้อ เช่น 'ลืมข้อ 2'`;
+        return `ไม่แน่ใจว่าจะให้ลบข้อไหนค่ะ ลองดูรายการก่อนด้วย 'รู้อะไรเกี่ยวกับผมบ้าง' แล้วบอกเลขข้อ เช่น 'ลืมข้อ 2'`;
       }
       const ok = await deleteKnowledge(input.userId, target.id);
       if (!ok) {
-        return "ลบไม่สำเร็จครับ ลองใหม่อีกครั้ง";
+        return "ลบไม่สำเร็จค่ะ ลองใหม่อีกครั้ง";
       }
-      return `ลบให้แล้วครับ 🗑️ [${kbCategoryLabel(target.category)}]\n${target.key}: ${target.value}`;
+      return `ลบให้แล้วค่ะ 🗑️ [${kbCategoryLabel(target.category)}]\n${target.key}: ${target.value}`;
     }
 
     case "plan": {
@@ -727,35 +952,32 @@ async function dispatch(
       }
       // If any step is destructive (R2), ask for confirmation before executing
       if (plan.requiresConfirmation) {
+        const { createPendingAction, expireStalePendingActions } = await import("@/lib/agent/pending");
+        await expireStalePendingActions(input.userId);
+        await createPendingAction({
+          userId: input.userId,
+          payload: plan,
+          riskLevel: "R2",
+          sourceEventId: input.webhookEventId,
+        });
         const stepList = plan.steps.map((s, i) => `${i + 1}. ${s.action}: ${s.text}`).join("\n");
-        return `ต้องทำ ${plan.steps.length} ขั้นตอน — มีบางขั้นที่ลบ/แก้ข้อมูลถาวร ยืนยันก่อนนะ:\n${stepList}\n\nพิมพ์ "ยืนยัน" เพื่อทำต่อ`;
+        return `ต้องทำ ${plan.steps.length} ขั้นตอน — มีบางขั้นที่ลบ/แก้ข้อมูลถาวร ยืนยันก่อนนะ:\n${stepList}\n\nพิมพ์ "ยืนยัน" เพื่อทำต่อ หรือ "ยกเลิกแผน" เพื่อยกเลิก (ภายใน 5 นาที)`;
       }
-      // Execute all steps sequentially
-      const results: string[] = [];
-      for (const step of plan.steps) {
-        try {
-          const stepIntent = {
-            action: step.action,
-            text: step.text,
-            query: step.query,
-            index: step.index,
-            priority: step.priority,
-            tier: step.tier,
-            raw: step.text,
-          };
-          const result = await dispatch(stepIntent, input, history);
-          results.push(typeof result === "string" ? result : result.text);
-        } catch (e) {
-          results.push(`⚠️ ขั้นที่ ${plan.steps.indexOf(step) + 1} ล้มเหลว: ${(e as Error).message}`);
-          break;
-        }
+      // Execute plan with structured receipts
+      const { executePlan } = await import("@/lib/agent/plan-exec");
+      const result = await executePlan(plan, input, history);
+      const lines = [result.summary];
+      for (const r of result.receipts) {
+        if (r.status === "success") lines.push(`✅ ${r.action}: ${r.result ?? ""}`);
+        else if (r.status === "failed") lines.push(`❌ ${r.action}: ${r.error ?? "ล้มเหลว"}`);
+        else lines.push(`⏭️ ${r.action}: ข้าม (เพราะขั้นก่อนหน้าล้มเหลว)`);
       }
-      return results.join("\n\n");
+      return lines.join("\n");
     }
 
     case "chat":
     default:
-      return await chatReply(input, history);
+      return await chatReply(input, history, intent.action);
   }
 }
 
@@ -873,17 +1095,17 @@ async function extractPeopleAndLink(userId: string, memoryId: string, content: s
   }
 }
 
-async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<string> {
+async function chatReply(input: HandleInput, history: ChatTurn[], action = "chat"): Promise<string> {
   const tz = await userTimezone(input.userId);
 
-  // 6-layer context: IDENTITY + SOP + owner PROFILE (KB, always-on) + live
-  // STATE + relevance-first MEMORY (RAG on THIS message). Replaces the old
-  // listRecent(3)-only context which never did RAG and never saw the profile.
+  // 6-layer context: IDENTITY + SOP + domain SOP + owner PROFILE (KB, always-on)
+  // + live STATE + relevance-first MEMORY (RAG on THIS message).
   const { buildAgentContext } = await import("@/lib/agent/context");
   const systemMsg = await buildAgentContext({
     userId: input.userId,
     message: input.text,
     timeZone: tz,
+    action,
   });
 
   // history รวมข้อความ user ปัจจุบัน (log แล้ว) — ตัดอันสุดท้ายออกก่อน slice
@@ -896,91 +1118,16 @@ async function chatReply(input: HandleInput, history: ChatTurn[]): Promise<strin
 
   const res = await chat({
     messages,
-    options: { temperature: 0.6, maxOutputTokens: 600, timeoutMs: 30_000 },
+    options: { temperature: 0.6, maxOutputTokens: 600, timeoutMs: 30_000, traceId: input.traceId },
   });
   return res.text || "ไม่แน่ใจจะตอบยังไง";
 }
 
 /** โครงสร้าง section สำหรับ buildHelpFlex() — คู่กับ helpText() ด้านล่าง (เนื้อหาต้องตรงกัน) */
-const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = [
-  {
-    title: "📝 จด/ค้น/เตือน",
-    lines: [
-      "พิมพ์/ส่งอะไรก็ได้ → จดให้อัตโนมัติ",
-      "'เคยบอกอะไรเรื่อง X' → ค้นความจำ",
-      "'เตือน X พรุ่งนี้ 9 โมง' → ตั้งเตือน",
-    ],
-  },
-  {
-    title: "📋 งาน/ปฏิทิน",
-    lines: [
-      "'จดงาน: ...' / 'มีงานค้างไหม' → to-do",
-      "'แก้งานที่ 2 เป็น ...' / 'เลื่อนงานแรกไปพรุ่งนี้'",
-      "'ทำงานแรกเสร็จแล้ว' / 'ยกเลิกงานแรก' / 'ลบงานที่ 2'",
-      "'นัด X พรุ่งนี้ 2 โมงเย็น' → ลงปฏิทิน",
-      "'เชื่อม calendar' → เชื่อม Google Calendar",
-    ],
-  },
-  {
-    title: "☀️ สรุปรายวัน",
-    lines: ["'สรุปวันนี้' → Daily Briefing", "'สรุปวันนี้ก่อนนอน' → Evening Review"],
-  },
-  {
-    title: "🔁 ติดตาม",
-    lines: ["'ส่งเมลหา X แล้ว' / 'รอ A ส่งไฟล์' → ติดตามอัตโนมัติ", "'มีอะไรรอติดตามไหม'"],
-  },
-  {
-    title: "👥 คน/ความจำ",
-    lines: [
-      "'John เป็นใคร' → ข้อมูลคนที่เคยจด",
-      "'ตั้ง คุณแม่ เป็น P1' → ระดับความสำคัญ (P1 สุด–P4 เย็น)",
-    ],
-  },
-  {
-    title: "🧠 สอนให้รู้จักคุณ",
-    lines: [
-      "'จำไว้ว่าผมชื่อ...' → จดข้อมูลถาวรเกี่ยวกับคุณ",
-      "'จำไว้ว่าเวลาตอบเมลให้เป็นทางการ' → คำสั่งประจำ",
-      "'รู้อะไรเกี่ยวกับผมบ้าง' → ดูสิ่งที่ผมจำไว้",
-      "'ลืมข้อ 2' / 'ลบที่จำว่า...' → ลบข้อมูลที่จำผิด",
-    ],
-  },
-  {
-    title: "💰 การเงิน",
-    lines: [
-      "'ซื้อกาแฟ 85' → บันทึกค่าใช้จ่าย",
-      "'เดือนนี้ใช้เท่าไร' → สรุปค่าใช้จ่าย",
-      "'สมัคร Netflix 199/เดือน' → subscription",
-    ],
-  },
-  {
-    title: "🎯 เป้าหมาย/ไดอารี่",
-    lines: [
-      "'ตั้งเป้า เรียนภาษา 45 นาที/วัน'",
-      "'วันนี้เรียนภาษา 30 นาที' → บันทึกความคืบหน้า",
-      "'เป้าคืบหน้ายัง'",
-      "'journal วันนี้'",
-    ],
-  },
-  {
-    title: "📋 ประชุม/เดินทาง/อีเมล",
-    lines: [
-      "'สรุปประชุม...' → จดแท็ก #meeting อัตโนมัติ",
-      "'ประชุมล่าสุดเรื่องอะไร' → ดึงบันทึกประชุม",
-      "'เตรียมประชุม' → brief ก่อนนัด",
-      "'บินพรุ่งนี้' → checklist เดินทาง",
-      "'สรุปเมล' → Inbox Zero",
-      "'ตอบเมล ...' → ร่างคำตอบ",
-    ],
-  },
-  {
-    title: "🗑 อื่นๆ",
-    lines: ["'ลบที่พึ่งส่ง' → ลบความจำล่าสุด"],
-  },
-];
+const HELP_SECTIONS: Array<{ title: string; lines: string[] }> = buildHelpSections();
 
 function helpText() {
-  const lines = ["โฮชิพร้อมช่วย 🙋", ""];
+  const lines = ["แจ๋วพร้อมช่วย 🙋", ""];
   for (const section of HELP_SECTIONS) {
     lines.push(section.title);
     for (const line of section.lines) lines.push(`• ${line}`);
@@ -1064,7 +1211,7 @@ function formatKnowledgeList(
   rows: { category: string; key: string; value: string; priority: number }[],
 ): string {
   const ordered = orderKnowledge(rows);
-  const lines: string[] = ["ผมจำเรื่องพวกนี้เกี่ยวกับคุณไว้ครับ 🧠", ""];
+  const lines: string[] = ["ผมจำเรื่องพวกนี้เกี่ยวกับคุณไว้ค่ะ 🧠", ""];
   let lastCat = "";
   let n = 0;
   for (const r of ordered) {
@@ -1076,7 +1223,7 @@ function formatKnowledgeList(
     n += 1;
     lines.push(`${n}. ${r.key}: ${r.value}`);
   }
-  lines.push("", "ถ้าจำผิดบอกได้ครับ เช่น 'ลืมข้อ 2' หรือ 'ลบที่จำว่า...'");
+  lines.push("", "ถ้าจำผิดบอกได้ค่ะ เช่น 'ลืมข้อ 2' หรือ 'ลบที่จำว่า...'");
   return lines.join("\n").trimEnd();
 }
 
@@ -1095,8 +1242,17 @@ function fmtThaiDate(iso: string, timeZone = BANGKOK) {
   }
 }
 
+const tzCache = new Map<string, Promise<string>>();
+
 async function userTimezone(userId: string): Promise<string> {
-  const { getSettings } = await import("@/lib/settings/repo");
-  const settings = await getSettings(userId);
-  return settings.timezone || BANGKOK;
+  const cached = tzCache.get(userId);
+  if (cached) return cached;
+  const promise = (async () => {
+    const { getSettings } = await import("@/lib/settings/repo");
+    const settings = await getSettings(userId);
+    return settings.timezone || BANGKOK;
+  })();
+  tzCache.set(userId, promise);
+  setTimeout(() => tzCache.delete(userId), 30_000);
+  return promise;
 }

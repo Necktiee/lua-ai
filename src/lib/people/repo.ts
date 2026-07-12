@@ -11,9 +11,9 @@ import type { Person } from "@/lib/types";
  * Used by dashboard explicit-create. Returns existing row if exact name
  * already exists (case-insensitive). Throws on DB error.
  *
- * This is separate from upsertPerson which does fuzzy partial matching
- * suitable for passive message extraction — dashboard create must not
- * accidentally merge "Ann" into "Annabelle".
+ * This is separate from upsertPerson which does exact name + exact alias
+ * matching suitable for passive message extraction — dashboard create
+ * additionally returns the created row and validates explicitly.
  */
 export async function createPerson(args: {
   userId: string;
@@ -84,7 +84,8 @@ export async function upsertPerson(args: {
   await touchUser(args.userId);
   const safeName = escapePostgresString(args.name);
 
-  // exact name match first, then partial (e.g. "John" → "John Doe").
+  // exact name match first, then exact alias match (case-insensitive).
+  // NEVER use fuzzy partial ILIKE "%name%" — it causes false merges.
   // limit(1) so duplicate names don't make maybeSingle() error (>1 row).
   const { data: byExact } = await db
     .from("people")
@@ -96,19 +97,9 @@ export async function upsertPerson(args: {
 
   let existing = byExact as Person | null;
 
-  if (!existing) {
-    const { data: byPartial } = await db
-      .from("people")
-      .select("*")
-      .eq("user_id", args.userId)
-      .ilike("name", `%${safeName}%`)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    existing = (byPartial as Person) ?? null;
-  }
-
-  // also check aliases if not found by name
+  // Check aliases if no exact name match.
+  // NEVER use fuzzy partial ILIKE matching ("%name%") — it causes false merges
+  // (e.g., "John" → "Johnson", "Ann" → "Annabelle"). Exact or alias only.
   if (!existing) {
     const { data: all } = await db
       .from("people")

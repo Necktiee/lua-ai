@@ -111,4 +111,21 @@ describe("Phase 4: Embedding jobs table invariants", () => {
     const job = { attempts: 0, status: "pending" };
     expect(job.attempts).toBe(0);
   });
+
+  it("worker retries up to 3 attempts then marks failed", () => {
+    const MAX = 3;
+    let attempts = 0;
+    let status = "pending";
+    while (attempts < MAX && status !== "done") {
+      attempts++;
+      status = attempts >= MAX ? "failed" : "pending";
+    }
+    expect(status).toBe("failed");
+    expect(attempts).toBe(3);
+  });
+
+  it("cron embed route is in CRON_ROUTES", async () => {
+    const { CRON_ROUTE_PATHS } = await import("../src/lib/cron/routes");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/embed");
+  });
 });

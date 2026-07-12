@@ -1,0 +1,16 @@
+{
+  "prompt_version": "2026-07-12-v4",
+  "sop_version": "2026-07-12-v3",
+  "domain_sop_version": "2026-07-12-v1",
+  "web_search_version": "2026-07-12-v1",
+  "required_t0_phrases": [
+    "security_policy",
+    "ห้ามเปิดเผยข้อมูลส่วนตัว",
+    "ห้ามแต่งข้อมูลส่วนตัว",
+    "ห้ามยืนยันว่าทำอะไรสำเร็จถ้ายังไม่ได้ทำ"
+  ],
+  "required_t1_phrases": [
+    "อีแจ๋ว",
+    "เลขา"
+  ]
+}

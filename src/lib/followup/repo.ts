@@ -66,6 +66,39 @@ export async function closeFollowUp(userId: string, id: string): Promise<boolean
   return !!data;
 }
 
+/** Reopen a closed follow-up. */
+export async function reopenFollowUp(userId: string, id: string): Promise<boolean> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("follow_ups")
+    .update({ status: "open", nudged_count: 0 })
+    .eq("user_id", userId)
+    .eq("id", id)
+    .eq("status", "closed")
+    .select("id")
+    .maybeSingle();
+  if (error) console.warn("[followup] reopen", error.message);
+  return !!data;
+}
+
+/** Reopen by 1-based index within recently-closed list. */
+export async function reopenFollowUpByIndex(userId: string, index: number): Promise<FollowUp | null> {
+  if (index < 1) return null;
+  const db = requireDb();
+  const { data } = await db
+    .from("follow_ups")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "closed")
+    .order("updated_at", { ascending: false })
+    .limit(10);
+  const list = (data ?? []) as FollowUp[];
+  const target = list[index - 1];
+  if (!target) return null;
+  const ok = await reopenFollowUp(userId, target.id);
+  return ok ? target : null;
+}
+
 export async function markNudged(id: string): Promise<void> {
   const db = requireDb();
   // Atomic increment via RPC (avoids read-then-write TOCTOU race)

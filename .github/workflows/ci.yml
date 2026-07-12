@@ -30,3 +30,12 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Migration parity (local list)
+        run: npm run check:migrations
+
+      - name: Security audit
+        run: npm run audit:security
+
+      - name: Cron route inventory
+        run: npx tsx -e "import { CRON_ROUTES } from './src/lib/cron/routes.ts'; if (CRON_ROUTES.length < 7) { console.error('too few routes'); process.exit(1); } console.log('CRON_ROUTES', CRON_ROUTES.length);"

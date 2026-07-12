@@ -65,6 +65,31 @@ export async function deleteGoal(userId: string, id: string): Promise<boolean> {
   return data != null;
 }
 
+/** Change goal status: pause (active→paused), resume (paused→active), archive (any→archived), complete (active→done). */
+export async function setGoalStatus(
+  userId: string,
+  id: string,
+  status: "paused" | "active" | "archived" | "done",
+): Promise<Goal | null> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("goals")
+    .update({ status })
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) console.warn("[goal] setStatus", error.message);
+  return data as Goal | null;
+}
+
+/** Get goal by 1-based index within active goals. */
+export async function getGoalByIndex(userId: string, index: number): Promise<Goal | null> {
+  if (index < 1) return null;
+  const goals = await getGoals(userId, "active");
+  return goals[index - 1] ?? null;
+}
+
 export async function logGoalProgress(args: {
   userId: string;
   goalId: string;

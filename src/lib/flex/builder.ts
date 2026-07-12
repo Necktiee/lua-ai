@@ -96,19 +96,67 @@ function listBubble(opts: {
   };
 }
 
-/** งานค้าง (todo_list) — จุดสีตาม priority + วันครบกำหนด */
+/** งานค้าง (todo_list) — จุดสีตาม priority + วันครบกำหนด + ปุ่มทำเสร็จ/ยกเลิก */
 export function buildTodoListFlex(
-  todos: Array<{ title: string; due_at?: string | null; priority: number }>,
+  todos: Array<{ id: string; title: string; due_at?: string | null; priority: number }>,
   fmtDate: (iso: string) => string,
 ): LineMessage {
-  const rows: FlexRow[] = todos.slice(0, 10).map((t) => ({
-    text: t.title,
-    sub: t.due_at ? fmtDate(t.due_at) : undefined,
-    dotColor: t.priority === 1 ? FLEX_COLORS.danger : t.priority === 3 ? "#a1a1aa" : FLEX_COLORS.warn,
-  }));
-  const footer = todos.length > 10 ? `และอีก ${todos.length - 10} รายการ` : undefined;
-  const contents = listBubble({ headerText: `งานค้าง (${todos.length})`, rows, footerText: footer });
-  return flexMessage(`งานค้าง ${todos.length} รายการ`, contents);
+  if (todos.length === 0) {
+    return flexMessage("ไม่มีงานค้าง", listBubble({ headerText: "งานค้าง (0)", rows: [] }));
+  }
+  const bubbles = todos.slice(0, 10).map((t) => {
+    const dotColor = t.priority === 1 ? FLEX_COLORS.danger : t.priority === 3 ? "#a1a1aa" : FLEX_COLORS.warn;
+    return {
+      type: "bubble" as const,
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        backgroundColor: FLEX_COLORS.accent,
+        paddingAll: "12px",
+        contents: [
+          {
+            type: "box" as const,
+            layout: "horizontal" as const,
+            contents: [
+              { type: "box" as const, layout: "vertical" as const, width: "8px", height: "8px", cornerRadius: "4px", backgroundColor: dotColor, contents: [] },
+              { type: "text" as const, text: t.title.slice(0, 80), color: "#ffffff", weight: "bold", size: "sm", flex: 1 },
+            ],
+            spacing: "sm",
+          },
+        ],
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "12px",
+        contents: [
+          ...(t.due_at ? [{ type: "text" as const, text: fmtDate(t.due_at), size: "xs", color: FLEX_COLORS.muted }] : []),
+        ],
+      },
+      footer: {
+        type: "box" as const,
+        layout: "horizontal" as const,
+        spacing: "sm",
+        contents: [
+          {
+            type: "button" as const,
+            style: "primary",
+            color: "#10b981",
+            action: { type: "postback", label: "✅ ทำเสร็จ", data: `todo_done=${t.id}` },
+          },
+          {
+            type: "button" as const,
+            style: "secondary",
+            action: { type: "postback", label: "🚫 ยกเลิก", data: `todo_cancel=${t.id}` },
+          },
+        ],
+      },
+    };
+  });
+  return flexMessage(
+    `งานค้าง ${todos.length} รายการ`,
+    bubbles.length === 1 ? bubbles[0] : { type: "carousel", contents: bubbles },
+  );
 }
 
 /** นัดในปฏิทิน (calendar_list) */
@@ -145,6 +193,50 @@ export function buildTextCardFlex(headerText: string, bodyText: string, headerCo
   return flexMessage(headerText, contents);
 }
 
+/** Follow-up list with close buttons */
+export function buildFollowUpListFlex(
+  followups: Array<{ id: string; subject: string; waitingFor?: string | null; ageDays: number }>,
+): LineMessage {
+  if (followups.length === 0) {
+    return flexMessage("ไม่มีเรื่องติดตาม", listBubble({ headerText: "ติดตาม (0)", rows: [] }));
+  }
+  const bubbles = followups.slice(0, 10).map((f) => ({
+    type: "bubble" as const,
+    header: {
+      type: "box" as const,
+      layout: "vertical" as const,
+      backgroundColor: FLEX_COLORS.warn,
+      paddingAll: "12px",
+      contents: [{ type: "text" as const, text: f.subject.slice(0, 80), color: "#ffffff", weight: "bold", size: "sm" }],
+    },
+    body: {
+      type: "box" as const,
+      layout: "vertical" as const,
+      paddingAll: "12px",
+      contents: [
+        ...(f.waitingFor ? [{ type: "text" as const, text: `รอ: ${f.waitingFor.slice(0, 100)}`, size: "xs", color: FLEX_COLORS.text, wrap: true }] : []),
+        { type: "text" as const, text: `${f.ageDays} วันที่แล้ว`, size: "xxs", color: FLEX_COLORS.muted, margin: "xs" },
+      ],
+    },
+    footer: {
+      type: "box" as const,
+      layout: "horizontal" as const,
+      contents: [
+        {
+          type: "button" as const,
+          style: "primary",
+          color: "#10b981",
+          action: { type: "postback", label: "✅ ปิด", data: `followup_close=${f.id}` },
+        },
+      ],
+    },
+  }));
+  return flexMessage(
+    `ติดตาม ${followups.length} เรื่อง`,
+    bubbles.length === 1 ? bubbles[0] : { type: "carousel", contents: bubbles },
+  );
+}
+
 /** วิธีใช้งาน (help) — แยกเป็น section หัวข้อ + บรรทัดคำสั่ง */
 export function buildHelpFlex(sections: Array<{ title: string; lines: string[] }>): LineMessage {
   const bodyContents: unknown[] = [];
@@ -169,7 +261,7 @@ export function buildHelpFlex(sections: Array<{ title: string; lines: string[] }
       layout: "vertical",
       backgroundColor: FLEX_COLORS.accent,
       paddingAll: "16px",
-      contents: [{ type: "text", text: "โฮชิพร้อมช่วย", color: "#ffffff", weight: "bold", size: "md" }],
+      contents: [{ type: "text", text: "แจ๋วพร้อมช่วย", color: "#ffffff", weight: "bold", size: "md" }],
     },
     body: {
       type: "box",
@@ -179,5 +271,5 @@ export function buildHelpFlex(sections: Array<{ title: string; lines: string[] }
       contents: bodyContents,
     },
   };
-  return flexMessage("โฮชิพร้อมช่วย — วิธีใช้งาน", contents);
+  return flexMessage("แจ๋วพร้อมช่วย — วิธีใช้งาน", contents);
 }

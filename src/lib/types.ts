@@ -181,6 +181,11 @@ export interface UserSettings {
   evening_enabled: boolean;
   auto_journal_enabled: boolean;
   follow_up_nudge_days: number;
+  /** Days to keep memory/messages; 0 = forever */
+  retention_days: number;
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
   timezone: string;
   updated_at: string;
 }

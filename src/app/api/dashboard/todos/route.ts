@@ -71,5 +71,23 @@ export async function DELETE(req: Request) {
 
   const todo = await deleteTodo(userId, id);
   if (!todo) return Response.json({ error: "todo not found" }, { status: 404 });
-  return Response.json({ todo });
+
+  const { createUndoToken } = await import("@/lib/undo/store");
+  const undo = await createUndoToken({
+    userId,
+    kind: "todo_delete",
+    label: todo.title,
+    payload: {
+      title: todo.title,
+      due_at: todo.due_at,
+      priority: todo.priority,
+      status: todo.status,
+    },
+  });
+
+  return Response.json({
+    todo,
+    receipt: { action: "deleted", target: todo.title },
+    undo: undo ? { id: undo.id, expiresAt: undo.expires_at } : null,
+  });
 }

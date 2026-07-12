@@ -1,0 +1,23 @@
+name: Canary smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary_url:
+        description: Vercel preview or canary URL to verify
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsx scripts/canary-smoke.ts
+        env:
+          CANARY_URL: ${{ inputs.canary_url }}

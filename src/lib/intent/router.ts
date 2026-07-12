@@ -4,6 +4,7 @@
  */
 import { chat } from "@/lib/llm/pool";
 import type { ChatTurn } from "@/lib/llm/types";
+import * as registry from "@/lib/agent/registry";
 
 export type Action =
   | "remember" // จดข้อมูลเข้าคลัง
@@ -34,6 +35,16 @@ export type Action =
   | "expense_summary" // เดือนนี้ใช้เท่าไร / สรุปค่าใช้จ่าย
   | "subscription_add" // สมัคร Netflix 199/เดือน
   | "subscription_list" // มี subscription อะไรบ้าง
+  | "subscription_cancel" // ยกเลิก Netflix / เลิกสมัคร
+  // Phase 3 — Lifecycle completions
+  | "remind_list" // ดูการเตือน / มีการเตือนอะไรบ้าง
+  | "remind_cancel" // ยกเลิกการเตือน / ลบการเตือน
+  | "remind_snooze" // เลื่อนการเตือน / ปีกการเตือน
+  | "expense_list" // ดูค่าใช้จ่ายล่าสุด / รายการค่าใช้จ่าย
+  | "expense_delete" // ลบค่าใช้จ่ายอันที่ X
+  | "goal_manage" // พักเป้า / ยกเลิกเป้า / เก็บเป้า / ทำเป้าเสร็จ
+  | "journal_add" // เขียนไดอารี่ / บันทึกวันนี้
+  | "followup_reopen" // เปิดติดตามใหม่ / reopen
   // Phase 8
   | "journal_show" // โชว์ journal / ไดอารี่วันนี้
   | "goal_add" // ตั้งเป้า เรียนภาษา 45 นาที/วัน
@@ -101,6 +112,15 @@ Actions:
 - expense_summary: สรุปค่าใช้จ่าย ("เดือนนี้ใช้เท่าไร", "สรุปค่าใช้จ่าย", "ใช้ไปเท่าไรสัปดาห์นี้")
 - subscription_add: สมัคร/เพิ่ม subscription ("สมัคร Netflix 199", "เพิ่ม Adobe 1500/เดือน")
 - subscription_list: ดู subscription ("มี subscription อะไรบ้าง", "จ่ายค่าสมัครอะไรบ้าง")
+- subscription_cancel: ยกเลิก/เลิกสมัคร subscription ("ยกเลิก Netflix", "เลิก Spotify", "ไม่เอาแล้ว")
+- remind_list: ดูการเตือนที่ตั้งไว้ ("มีการเตือนอะไรบ้าง", "ตั้งเตือนอะไรไว้บ้าง", "ดูการเตือน")
+- remind_cancel: ยกเลิก/ลบการเตือน ("ยกเลิกการเตือน", "ลบเตือนอันแรก", "เอาการเตือนออก") — ระบุ index ถ้ามี
+- remind_snooze: เลื่อน/ปีกการเตือน ("เลื่อนการเตือน", "เตือนช้าลง", "ปีกไปอีก 30 นาที") — ระบุ index ถ้ามี
+- expense_list: ดูรายการค่าใช้จ่ายล่าสุด ("ค่าใช้จ่ายล่าสุด", "รายการที่ใช้ไป", "ดูค่าใช้จ่ายวันนี้") — ต่างจาก expense_summary ตรงที่อยากดูรายการ ไม่ใช่สรุปยอด
+- expense_delete: ลบรายการค่าใช้จ่าย ("ลบค่าใช้จ่ายอันแรก", "ลบที่บันทึกผิด") — ระบุ index
+- goal_manage: จัดการสถานะเป้าหมาย — พัก ("พักเป้า", "หยุดเป้าชั่วคราว"), ทำต่อ ("ทำต่อ", "resume เป้า"), เก็บ ("เก็บเป้า", "เลิกเป้า", "archive"), ทำเสร็จ ("ทำเป้าเสร็จแล้ว", "เป้าสำเร็จ") — ระบุ index หรือชื่อเป้าใน text
+- journal_add: เขียนไดอารี่/journal เอง ("เขียนไดอารี่", "บันทึกวันนี้", "วันนี้รู้สึก...") — ต่างจาก journal_show ตรงที่ user อยากเขียนเอง ไม่ใช่ขอดู
+- followup_reopen: เปิดติดตามเรื่องที่ปิดไปแล้วใหม่ ("เปิดติดตามใหม่", "อันนี้ยังไม่จบ", "reopen")
 - journal_show: ขอดูไดอารี่/journal ("โชว์ journal", "ไดอารี่วันนี้", "วันนี้ทำอะไร")
 - goal_add: ตั้งเป้าหมาย ("ตั้งเป้า เรียนภาษา 45 นาที/วัน", "เป้าหมายใหม่")
 - goal_log: บันทึกความคืบหน้าเป้าหมาย ("วันนี้เรียนภาษา 30 นาที", "วิ่งไป 5 กม.")
@@ -146,6 +166,14 @@ export async function classify(
     return { action: "remember", text: "", raw: "" };
   }
 
+  // Fast-path: deterministic regex for high-precision commands.
+  // Skips the LLM call entirely for obvious patterns (~30% of messages).
+  const { fastClassify } = await import("@/lib/intent/fast-path");
+  const fast = fastClassify(userText);
+  if (fast) {
+    return { action: fast.action as Action, text: fast.text, index: fast.index, raw: userText };
+  }
+
   const recent = history.slice(-6).map((m) => `${m.role}: ${m.content}`).join("\n");
   const userMsg = `Conversation so far:\n${recent || "(none)"}\n\nClassify this latest message:\n${JSON.stringify(userText)}`;
 
@@ -187,19 +215,9 @@ function applyRememberOverride(intent: Intent, userText: string): Intent {
   return intent;
 }
 
-function validAction(a: unknown): a is Action {
-  return [
-    "remember","recall","remind","todo_add","todo_list","todo_done","todo_cancel","todo_update","todo_delete",
-    "calendar_add","calendar_list","chat","help","delete_recent",
-    "briefing","evening_review","followup_add","followup_list","followup_close","people_ask",
-    "expense_add","expense_summary","subscription_add","subscription_list",
-    "journal_show","goal_add","goal_log","goal_progress","decision_recall",
-    "meeting_prep","travel_checklist",
-    "email_summary","email_reply",
-    "web_search",
-    "meeting_list",
-    "kb_add","kb_ask","kb_forget",
-    "people_set_tier",
-    "plan",
-  ].includes(a as string);
+export function validAction(a: unknown): a is Action {
+  return (
+    typeof a === "string" &&
+    (a === "plan" || a === "chat" || a === "help" || registry.isValidAction(a))
+  );
 }

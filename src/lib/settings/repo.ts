@@ -36,6 +36,10 @@ const DEFAULTS: Omit<UserSettings, "user_id" | "updated_at"> = {
   evening_enabled: true,
   auto_journal_enabled: true,
   follow_up_nudge_days: 3,
+  retention_days: 0,
+  quiet_hours_enabled: false,
+  quiet_hours_start: null,
+  quiet_hours_end: null,
   timezone: "Asia/Bangkok",
 };
 

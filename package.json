@@ -8,10 +8,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "clean": "Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue",
+    "clean": "node -e \"require('node:fs').rmSync('.next', { recursive: true, force: true })\"",
     "rebuild": "npm run clean && npm run build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:migrations": "tsx scripts/check-migration-parity.ts",
+    "check:schedules": "tsx scripts/check-schedule-health.ts",
+    "baseline": "tsx scripts/baseline-report.ts",
+    "eval:routing": "tsx scripts/eval-routing-live.ts",
+    "eval:rag": "tsx scripts/eval-rag-live.ts",
+    "audit:wcag": "tsx scripts/audit-wcag.ts",
+    "smoke:canary": "tsx scripts/canary-smoke.ts",
+    "audit:security": "tsx scripts/security-audit.ts"
   },
   "dependencies": {
     "@line/bot-sdk": "^11.1.0",
@@ -32,11 +40,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.10",
+    "axe-core": "^4.12.1",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",

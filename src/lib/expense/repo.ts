@@ -93,6 +93,41 @@ export async function deleteExpense(userId: string, id: string): Promise<boolean
   return (count ?? 0) > 0;
 }
 
+/** Delete by 1-based index within listExpenses order. */
+export async function deleteExpenseByIndex(userId: string, index: number): Promise<Expense | null> {
+  if (index < 1) return null;
+  const list = await listExpenses(userId, 20);
+  const target = list[index - 1];
+  if (!target) return null;
+  const ok = await deleteExpense(userId, target.id);
+  return ok ? target : null;
+}
+
+/** Edit an expense (amount/category/description/expense_date). */
+export async function updateExpense(
+  userId: string,
+  id: string,
+  patch: { amount?: number; category?: string; description?: string; expense_date?: string },
+): Promise<Expense | null> {
+  const db = requireDb();
+  const updateFields: Record<string, unknown> = {};
+  if (patch.amount !== undefined) updateFields.amount = patch.amount;
+  if (patch.category !== undefined) updateFields.category = patch.category;
+  if (patch.description !== undefined) updateFields.description = patch.description;
+  if (patch.expense_date !== undefined) updateFields.expense_date = patch.expense_date;
+  if (Object.keys(updateFields).length === 0) return null;
+
+  const { data, error } = await db
+    .from("expenses")
+    .update(updateFields)
+    .eq("user_id", userId)
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) console.warn("[expense] update", error.message);
+  return data as Expense | null;
+}
+
 // ============================================================
 // Subscriptions
 // ============================================================

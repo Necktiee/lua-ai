@@ -4,6 +4,7 @@
  */
 import { requireSessionUser } from "@/lib/auth/require-session";
 import { requireDb } from "@/lib/db/client";
+import { decryptSecret } from "@/lib/crypto/secrets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,11 +25,14 @@ export async function POST() {
   // Revoke the refresh token with Google (best-effort)
   if (token?.refresh_token) {
     try {
-      await fetch("https://oauth2.googleapis.com/revoke", {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: `token=${encodeURIComponent(token.refresh_token)}`,
-      });
+      const refresh = decryptSecret(token.refresh_token as string);
+      if (refresh) {
+        await fetch("https://oauth2.googleapis.com/revoke", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `token=${encodeURIComponent(refresh)}`,
+        });
+      }
     } catch (e) {
       console.warn("[google-disconnect] revoke failed", (e as Error).message);
     }

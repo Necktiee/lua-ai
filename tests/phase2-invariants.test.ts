@@ -199,3 +199,50 @@ describe("Phase 2: Regression — Phase 1 fixes still hold", () => {
     }
   });
 });
+
+describe("Phase 2: Mutation idempotency + deadline", () => {
+  it("makeMutationKey is stable for same event+action+target", async () => {
+    const { makeMutationKey, normalizeTarget } = await import("../src/lib/idempotency/mutation");
+    const a = makeMutationKey("ev-1", "todo_add", "  ซื้อกาแฟ  ");
+    const b = makeMutationKey("ev-1", "todo_add", "ซื้อกาแฟ");
+    expect(a).toBe(b);
+    expect(normalizeTarget("  A  B ")).toBe("a b");
+  });
+
+  it("different action or target yields different keys", async () => {
+    const { makeMutationKey } = await import("../src/lib/idempotency/mutation");
+    const a = makeMutationKey("ev-1", "todo_add", "x");
+    const b = makeMutationKey("ev-1", "todo_done", "x");
+    const c = makeMutationKey("ev-1", "todo_add", "y");
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  it("isMutatingAction covers writes but not chat/recall", async () => {
+    const { isMutatingAction } = await import("../src/lib/idempotency/mutation");
+    expect(isMutatingAction("todo_add")).toBe(true);
+    expect(isMutatingAction("remember")).toBe(true);
+    expect(isMutatingAction("chat")).toBe(false);
+    expect(isMutatingAction("recall")).toBe(false);
+  });
+
+  it("retryBackoffMs grows with attempts", async () => {
+    const { retryBackoffMs } = await import("../src/lib/idempotency/mutation");
+    expect(retryBackoffMs(1)).toBe(30_000);
+    expect(retryBackoffMs(2)).toBe(120_000);
+    expect(retryBackoffMs(2)).toBeGreaterThan(retryBackoffMs(1));
+  });
+
+  it("Deadline expires after budget and llmTimeoutMs respects remaining", async () => {
+    const { Deadline, DeadlineExceededError, DEFAULT_WORKFLOW_DEADLINE_MS } = await import(
+      "../src/lib/deadline"
+    );
+    expect(DEFAULT_WORKFLOW_DEADLINE_MS).toBe(45_000);
+    const d = new Deadline(1000, Date.now() - 2000);
+    expect(d.expired()).toBe(true);
+    expect(() => d.throwIfExpired()).toThrow(DeadlineExceededError);
+    const fresh = new Deadline(30_000);
+    expect(fresh.llmTimeoutMs(20_000)).toBeLessThanOrEqual(20_000);
+    expect(fresh.remainingMs()).toBeGreaterThan(0);
+  });
+});

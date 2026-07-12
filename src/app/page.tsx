@@ -14,12 +14,12 @@ export default async function Home() {
         <div className="flex items-center gap-2.5">
           <Robot weight="fill" className="w-6 h-6 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
           <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50 tracking-tight">
-            โฮชิ <span className="text-zinc-400 dark:text-zinc-500 text-sm font-normal">— Personal LINE AI Secretary</span>
+            อีแจ๋ว <span className="text-zinc-600 dark:text-zinc-400 text-sm font-normal">— Personal LINE AI Secretary</span>
           </h1>
         </div>
 
         <section className="space-y-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Status</h2>
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-600 dark:text-zinc-400">Status</h2>
           <div className="grid grid-cols-2 gap-1.5">
             <Row ok={hasLine()} label="LINE" />
             <Row ok={hasSupabase()} label="Supabase" />
@@ -31,14 +31,14 @@ export default async function Home() {
         </section>
 
         <section className="space-y-1.5 border-t border-zinc-100 dark:border-zinc-800 pt-4">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">LLM pool</h2>
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-600 dark:text-zinc-400">LLM pool</h2>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">{providers.join(" → ")}</p>
-          <p className="text-xs text-zinc-400 dark:text-zinc-500 font-mono">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 font-mono">
             gemini:{env.GEMINI_API_KEYS.length} mistral:{env.MISTRAL_API_KEYS.length} thaillm:{env.THAILLM_API_KEYS.length}
           </p>
         </section>
 
-        <p className="text-xs text-zinc-400 dark:text-zinc-500 border-t border-zinc-100 dark:border-zinc-800 pt-4">
+        <p className="text-xs text-zinc-600 dark:text-zinc-400 border-t border-zinc-100 dark:border-zinc-800 pt-4">
           Webhook: <code className="font-mono text-zinc-600 dark:text-zinc-400">POST /api/line</code>
         </p>
       </div>
@@ -54,7 +54,7 @@ function Row({ ok, label }: { ok: boolean; label: string }) {
       ) : (
         <Circle weight="regular" className="w-4 h-4 text-zinc-300 dark:text-zinc-600 flex-shrink-0" />
       )}
-      <span className={ok ? "text-zinc-700 dark:text-zinc-300" : "text-zinc-400 dark:text-zinc-600"}>
+      <span className={ok ? "text-zinc-700 dark:text-zinc-300" : "text-zinc-600 dark:text-zinc-400"}>
         {label}
       </span>
     </div>

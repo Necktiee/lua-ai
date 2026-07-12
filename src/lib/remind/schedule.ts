@@ -134,7 +134,7 @@ export async function cancelReminder(id: string): Promise<boolean> {
   return Boolean(data);
 }
 
-export async function listUpcoming(userId: string, limit = 5): Promise<ReminderRecord[]> {
+export async function listUpcoming(userId: string, limit = 10): Promise<ReminderRecord[]> {
   const db = requireDb();
   const { data } = await db
     .from("reminders")
@@ -145,6 +145,58 @@ export async function listUpcoming(userId: string, limit = 5): Promise<ReminderR
     .order("fire_at", { ascending: true })
     .limit(limit);
   return (data ?? []) as ReminderRecord[];
+}
+
+/** Cancel reminder by 1-based index within listUpcoming order. */
+export async function cancelReminderByIndex(userId: string, index: number): Promise<ReminderRecord | null> {
+  if (index < 1) return null;
+  const list = await listUpcoming(userId, 20);
+  const target = list[index - 1];
+  if (!target) return null;
+  const ok = await cancelReminder(target.id);
+  return ok ? target : null;
+}
+
+/** Snooze: update fire_at + re-schedule QStash. */
+export async function snoozeReminder(id: string, newFireAt: string): Promise<ReminderRecord | null> {
+  const db = requireDb();
+  const existing = await getReminder(id);
+  if (!existing || existing.fired) return null;
+
+  const client = qstashClient();
+  if (client && existing.qstash_msg_id) {
+    try { await client.messages.cancel(existing.qstash_msg_id); } catch { /* best-effort */ }
+  }
+
+  const fireMs = new Date(newFireAt).getTime();
+  const delayMs = Math.max(0, fireMs - Date.now());
+  let qstashMsgId: string | null = null;
+  const MAX_QSTASH_DELAY = 7 * 24 * 60 * 60 * 1000;
+  if (client && env.APP_BASE_URL && delayMs < MAX_QSTASH_DELAY) {
+    const callback = `${env.APP_BASE_URL.replace(/\/$/, "")}/api/cron/remind`;
+    try {
+      const res = await client.publishJSON({ url: callback, delay: Math.round(delayMs / 1000), body: { id } });
+      qstashMsgId = res.messageId ?? null;
+    } catch (e) { console.warn("[remind] snooze qstash", e); }
+  }
+
+  const { data, error } = await db
+    .from("reminders")
+    .update({ fire_at: newFireAt, qstash_msg_id: qstashMsgId })
+    .eq("id", id)
+    .eq("fired", false)
+    .select()
+    .maybeSingle();
+  if (error) { console.warn("[remind] snooze", error.message); return null; }
+  return data as ReminderRecord | null;
+}
+
+/** Snooze by 1-based index. */
+export async function snoozeReminderByIndex(userId: string, index: number, newFireAt: string): Promise<ReminderRecord | null> {
+  const list = await listUpcoming(userId, 20);
+  const target = list[index - 1];
+  if (!target) return null;
+  return snoozeReminder(target.id, newFireAt);
 }
 
 export const hasScheduler = hasQStash;

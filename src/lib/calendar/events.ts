@@ -1,10 +1,11 @@
 /**
  * Calendar module — wrapper รอบ googleapis.
- * Token per-user เก็บในตาราง google_tokens.
+ * Token per-user เก็บในตาราง google_tokens (encrypted at rest when TOKEN_ENCRYPTION_KEY set).
  */
 import { google } from "googleapis";
 import { requireDb } from "@/lib/db/client";
 import { env } from "@/lib/env";
+import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets";
 import type { CalendarEvent } from "@/lib/types";
 
 const SCOPES = [
@@ -55,8 +56,11 @@ export async function saveTokens(userId: string, tokens: GoogleTokens) {
     .eq("user_id", userId)
     .maybeSingle();
 
+  const existingRefresh = existing?.refresh_token
+    ? decryptSecret(existing.refresh_token as string)
+    : null;
   const refreshToken =
-    tokens.refresh_token ?? existing?.refresh_token ?? null;
+    tokens.refresh_token ?? existingRefresh ?? null;
   const expiry = tokens.expiry_date
     ? new Date(tokens.expiry_date).toISOString()
     : existing?.expiry ?? null;
@@ -64,8 +68,8 @@ export async function saveTokens(userId: string, tokens: GoogleTokens) {
 
   const { error } = await db.from("google_tokens").upsert({
     user_id: userId,
-    access_token: tokens.access_token,
-    refresh_token: refreshToken,
+    access_token: encryptSecret(tokens.access_token),
+    refresh_token: encryptSecret(refreshToken),
     expiry,
     scope,
     updated_at: new Date().toISOString(),
@@ -84,8 +88,8 @@ export async function getAuthedClient(userId: string) {
   if (!data) throw new Error("Google Calendar ยังไม่ได้เชื่อม — พิมพ์ 'เชื่อม calendar'");
   const c = oauth2Client();
   c.setCredentials({
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
+    access_token: decryptSecret(data.access_token as string | null) ?? undefined,
+    refresh_token: decryptSecret(data.refresh_token as string | null) ?? undefined,
     expiry_date: data.expiry ? new Date(data.expiry).getTime() : undefined,
   });
   // persist refreshed tokens back to DB so we don't refresh every request

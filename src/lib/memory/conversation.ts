@@ -8,10 +8,12 @@ export async function logMessage(
   content: string,
   meta?: Record<string, unknown>,
   delivered?: boolean,
+  traceId?: string,
 ) {
   const db = requireDb();
   const row: Record<string, unknown> = { user_id: userId, role, content, meta };
   if (delivered !== undefined) row.delivered = delivered;
+  if (traceId) row.trace_id = traceId;
   const { error } = await db.from("messages").insert(row);
   if (error) console.warn("[conversation] logMessage", error.message);
 }

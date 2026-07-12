@@ -64,3 +64,9 @@ jobs:
           curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/email" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -o /dev/null -w "email: %{http_code}\n"
+
+      - name: Embedding jobs worker
+        run: |
+          curl -sf -X GET "https://lua-ai-two.vercel.app/api/cron/embed" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -o /dev/null -w "embed: %{http_code}\n"

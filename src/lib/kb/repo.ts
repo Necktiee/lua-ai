@@ -24,15 +24,24 @@ export interface UpsertKnowledgeArgs {
   sourceId?: string;
 }
 
+export interface UpsertResult {
+  knowledge: KnowledgeRecord;
+  /** Previous value if this was an update (for contradiction surfacing). */
+  previousValue?: string;
+  /** Whether a new row was created (true) vs updated (false). */
+  created: boolean;
+}
+
 /**
  * Insert or update a knowledge fact. Unique on (user_id, category, key) so
  * re-stating a fact ("ชื่อจริง" = ...) overwrites instead of duplicating.
  * When updating, the previous version is archived to knowledge_versions
  * for audit trail and rollback. Embedding is best-effort with model tracking.
+ * Returns the result including the previous value if this was an update.
  */
 export async function upsertKnowledge(
   args: UpsertKnowledgeArgs,
-): Promise<KnowledgeRecord> {
+): Promise<UpsertResult> {
   const db = requireDb();
   await touchUser(args.userId);
 
@@ -45,20 +54,23 @@ export async function upsertKnowledge(
     .eq("key", args.key)
     .maybeSingle();
 
-  // Archive old version if key or value is changing
-  if (existing) {
-    const old = existing as KnowledgeRecord;
-    if (old.value !== args.value || old.key !== args.key) {
+  let previousValue: string | undefined;
+  const oldRow = existing as KnowledgeRecord | null;
+
+  // Archive old version if value is changing (key match is guaranteed by unique constraint)
+  if (oldRow) {
+    if (oldRow.value !== args.value) {
+      previousValue = oldRow.value;
       try {
         await db.from("knowledge_versions").insert({
-          knowledge_id: old.id,
+          knowledge_id: oldRow.id,
           user_id: args.userId,
-          key: old.key,
-          value: old.value,
-          category: old.category,
-          priority: old.priority,
-          source: old.source,
-          embedding_model: (old as KnowledgeRecord & { embedding_model?: string }).embedding_model ?? null,
+          key: oldRow.key,
+          value: oldRow.value,
+          category: oldRow.category,
+          priority: oldRow.priority,
+          source: oldRow.source,
+          embedding_model: (oldRow as KnowledgeRecord & { embedding_model?: string }).embedding_model ?? null,
           archived_reason: "updated",
         });
       } catch (e) {
@@ -79,6 +91,11 @@ export async function upsertKnowledge(
     embeddingStatus = "failed";
   }
 
+  // Content hash for dedup tracking
+  const hashInput = `${args.userId}:${args.category}:${args.key}:${args.value}`;
+  const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
+  const contentHash = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+
   const row = {
     user_id: args.userId,
     category: args.category,
@@ -89,7 +106,7 @@ export async function upsertKnowledge(
     embedding: embedding ?? null,
     source_type: args.sourceType ?? "user",
     source_id: args.sourceId ?? null,
-    content_hash: null,
+    content_hash: contentHash,
     embedding_model: embeddingModel,
     embedding_status: embeddingStatus,
     superseded_by: null,
@@ -101,7 +118,11 @@ export async function upsertKnowledge(
     .select()
     .single();
   if (error) throw new Error(`knowledge upsert: ${error.message}`);
-  return data as KnowledgeRecord;
+  return {
+    knowledge: data as KnowledgeRecord,
+    previousValue,
+    created: !oldRow,
+  };
 }
 
 /**
@@ -119,6 +140,7 @@ export async function listAlwaysInject(
     .select("*")
     .eq("user_id", userId)
     .lte("priority", maxPriority)
+    .is("superseded_by", null)
     .order("priority", { ascending: true })
     .order("updated_at", { ascending: false })
     .limit(40);
@@ -138,6 +160,7 @@ export async function listByCategory(
     .select("*")
     .eq("user_id", userId)
     .eq("category", category)
+    .is("superseded_by", null)
     .order("updated_at", { ascending: false })
     .limit(limit);
   if (error) console.warn("[kb] listByCategory", error.message);
@@ -154,6 +177,7 @@ export async function listKnowledge(
     .from("knowledge")
     .select("*")
     .eq("user_id", userId)
+    .is("superseded_by", null)
     .order("priority", { ascending: true })
     .order("updated_at", { ascending: false })
     .limit(limit);
@@ -164,6 +188,7 @@ export async function listKnowledge(
 export interface KnowledgeSearchResult {
   knowledge: KnowledgeRecord;
   similarity: number;
+  rrfScore?: number;
 }
 
 const DEFAULT_MIN_SIMILARITY = 0.3;
@@ -228,13 +253,14 @@ export async function recallKnowledgeHybrid(
         created_at: r.created_at as string,
         updated_at: r.updated_at as string,
       } as KnowledgeRecord,
-      similarity: Number(r.rrf_score ?? r.similarity ?? 0),
+      similarity: r.similarity != null ? Number(r.similarity) : 0,
+      rrfScore: Number(r.rrf_score ?? 0),
     }),
   );
 
-  const minSim = opts?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
-  const filtered = results.filter((r) => r.similarity >= minSim);
-  return filtered.length > 0 ? filtered : results;
+  // The RPC already ranks via 3-channel RRF. Don't apply a cosine gate
+  // that would drop lexical-only (trigram/FTS) Thai matches.
+  return results;
 }
 
 export async function recallKnowledge(
@@ -322,6 +348,7 @@ async function recallTextFallback(
       .from("knowledge")
       .select("*")
       .eq("user_id", userId)
+      .is("superseded_by", null)
       .ilike(col, pattern);
     if (category) q = q.eq("category", category);
     return q.order("updated_at", { ascending: false }).limit(limit);

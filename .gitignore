@@ -42,3 +42,10 @@ tunnel.err
 Thumbs.db
 
 .vercel
+
+# Raw source images (ChatGPT-generated originals)
+avtar.png
+lineMenu.png
+# Large PNG variant (JPG is what's deployed)
+assets/richmenu-jaew.png
+

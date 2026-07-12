@@ -28,6 +28,21 @@ function validateSettingsField(key: string, value: unknown): string | null {
         return `${key} must be an integer 0-30`;
       }
       return null;
+    case "retention_days":
+      if (typeof value !== "number" || value < 0 || value > 3650 || !Number.isInteger(value)) {
+        return `${key} must be an integer 0-3650 (0 = forever)`;
+      }
+      return null;
+    case "quiet_hours_enabled":
+      if (typeof value !== "boolean") return `${key} must be boolean`;
+      return null;
+    case "quiet_hours_start":
+    case "quiet_hours_end":
+      if (value === null) return null;
+      if (typeof value !== "string" || !TIME_RE.test(value)) {
+        return `${key} must be HH:mm or null`;
+      }
+      return null;
     case "timezone":
       if (typeof value !== "string" || !IANA_RE.test(value)) {
         return `${key} must be a valid IANA timezone (e.g. Asia/Bangkok)`;
@@ -63,6 +78,10 @@ export async function PATCH(req: Request) {
     "evening_enabled",
     "auto_journal_enabled",
     "follow_up_nudge_days",
+    "retention_days",
+    "quiet_hours_enabled",
+    "quiet_hours_start",
+    "quiet_hours_end",
     "timezone",
   ] as const;
 

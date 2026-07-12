@@ -63,3 +63,29 @@ describe("P0 fixture: RAG fallback scenarios", () => {
     expect(noFallback).toBeDefined();
   });
 });
+
+describe("Phase 0: Schedule health invariants", () => {
+  it("CRON_ROUTES lists all product cron paths", async () => {
+    const { CRON_ROUTES, CRON_ROUTE_PATHS } = await import("../src/lib/cron/routes");
+    expect(CRON_ROUTES.length).toBeGreaterThanOrEqual(10);
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/poll");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/briefing");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/evening");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/daily");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/journal");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/nudge");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/meeting");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/weekly");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/email");
+    expect(CRON_ROUTE_PATHS).toContain("/api/cron/embed");
+  });
+
+  it("each route has id, cron, and description", async () => {
+    const { CRON_ROUTES } = await import("../src/lib/cron/routes");
+    for (const r of CRON_ROUTES) {
+      expect(r.id).toMatch(/^lua-ai-/);
+      expect(r.cron).toBeTruthy();
+      expect(r.description.length).toBeGreaterThan(5);
+    }
+  });
+});

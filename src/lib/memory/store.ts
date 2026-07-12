@@ -69,7 +69,23 @@ export async function remember(args: {
     .select()
     .single();
   if (error) throw new Error(`memory insert: ${error.message}`);
-  return data as MemoryRecord;
+  const record = data as MemoryRecord;
+
+  // Queue retry when embed failed or null so worker can heal later
+  if (embeddingStatus === "failed" || embeddingStatus === "null") {
+    void import("@/lib/embedding/jobs")
+      .then(({ enqueueEmbeddingJob }) =>
+        enqueueEmbeddingJob({
+          userId: args.userId,
+          targetTable: "memory",
+          targetId: record.id,
+          content: args.content,
+        }),
+      )
+      .catch((e) => console.warn("[memory] enqueue embed job", (e as Error).message));
+  }
+
+  return record;
 }
 
 export interface RecallFilters {
@@ -94,6 +110,7 @@ export interface RecallFilters {
 export interface SearchResult {
   memory: MemoryRecord;
   similarity: number;
+  rrfScore?: number;
 }
 
 const DEFAULT_MIN_SIMILARITY = 0.3;
@@ -150,16 +167,19 @@ export async function recallHybrid(
         tags: r.tags as string[],
         created_at: r.created_at as string,
       } as MemoryRecord,
-      similarity: Number(r.rrf_score ?? r.similarity ?? 0),
+      similarity: r.similarity != null ? Number(r.similarity) : 0,
+      rrfScore: Number(r.rrf_score ?? 0),
     }),
   );
 
-  const minSim = filters?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
-  const filtered = results.filter((r) => r.similarity >= minSim);
-  if (filtered.length === 0 && results.length === 0) {
+  // The RPC already ranks via 3-channel RRF (FTS + trigram + vector).
+  // Applying a cosine gate here would silently drop lexical-only matches
+  // (trigram/FTS hits on null-embedding rows) — defeating Phase 6's goal.
+  // The cosine gate remains on the vector-only recall() path below.
+  if (results.length === 0) {
     return recallTextFallback(db, userId, query, limit, filters);
   }
-  return filtered.length > 0 ? filtered : results;
+  return results;
 }
 
 export async function recall(

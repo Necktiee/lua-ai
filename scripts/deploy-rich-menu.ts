@@ -7,25 +7,29 @@ const IMG_PATH = process.argv[2];
 async function main() {
   if (!IMG_PATH) throw new Error("usage: tsx deploy-rich-menu.ts <path-to-png>");
   const img = readFileSync(IMG_PATH);
-  console.log(`[1/3] Loaded ${IMG_PATH} (${img.length} bytes)`);
+  const contentType = IMG_PATH.toLowerCase().endsWith(".jpg") || IMG_PATH.toLowerCase().endsWith(".jpeg") ? "image/jpeg" : "image/png";
+  console.log(`[1/3] Loaded ${IMG_PATH} (${img.length} bytes, ${contentType})`);
 
-  // Create rich menu object (4x2 grid, 2500x1686 full)
+  // 3x2 grid, 2500x1686 full. Column widths 833/834/833 sum to 2500.
   console.log("[2/3] Creating rich menu object...");
-  const cellW = 625, cellH = 843;
+  const cellW = [833, 834, 833];
+  const cellH = 843;
   const labels = [
-    { label: "จด", text: "จด " },
-    { label: "ค้น", text: "ค้น " },
-    { label: "เตือน", text: "เตือน " },
-    { label: "งานค้าง", text: "มีงานอะไรบ้าง" },
+    { label: "คุยกับแจ๋ว", text: "แจ๋วช่วยอะไรได้บ้าง" },
+    { label: "เพิ่มงาน", text: "เพิ่มงาน " },
+    { label: "เตือนฉัน", text: "เตือนฉัน " },
+    { label: "วันนี้", text: "สรุปวันนี้" },
     { label: "ปฏิทิน", text: "ปฏิทินสัปดาห์นี้" },
-    { label: "สรุปวัน", text: "สรุปวันนี้" },
-    { label: "dashboard", liff: true },
-    { label: "ช่วยเหลือ", text: "ช่วยเหลือ" },
+    { label: "เปิดอีแจ๋ว", liff: true },
   ];
   const areas = labels.map((c, i) => {
-    const col = i % 4;
-    const row = Math.floor(i / 4);
-    const bounds = { x: col * cellW, y: row * cellH, width: cellW, height: cellH };
+    const col = i % 3;
+    const rowIdx = Math.floor(i / 3);
+    const x = cellW.slice(0, col).reduce((a, b) => a + b, 0);
+    const y = rowIdx * cellH;
+    const width = cellW[col];
+    const height = cellH;
+    const bounds = { x, y, width, height };
     if (c.liff) {
       return { bounds, action: { type: "uri", uri: `https://liff.line.me/${LIFF_ID}` } };
     }
@@ -33,8 +37,8 @@ async function main() {
   });
   const menuBody = {
     size: { width: 2500, height: 1686 },
-    name: "Hoshi main menu",
-    chatBarText: "เมนูโฮชิ",
+    name: "อีแจ๋ว main menu",
+    chatBarText: "เมนูแจ๋ว",
     selected: true,
     areas,
   };
@@ -58,7 +62,7 @@ async function main() {
   const upRes = await fetch(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, {
     method: "POST",
     headers: {
-      "Content-Type": "image/png",
+      "Content-Type": contentType,
       Authorization: `Bearer ${LINE_TOKEN}`,
     },
     body: img,

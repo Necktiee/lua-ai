@@ -23,6 +23,7 @@ export interface WebhookEventRow {
   source_type: string | null;
   message_type: string | null;
   message_id: string | null;
+  trace_id: string | null;
 }
 
 export interface ReceiveEventArgs {
@@ -98,7 +99,8 @@ export async function markDone(webhookEventId: string): Promise<void> {
 }
 
 /**
- * Mark an event as failed. After 3 attempts, move to dead_letter.
+ * Mark an event as failed. Schedules exponential backoff via next_retry_at.
+ * After 3 attempts, move to dead_letter.
  */
 export async function markFailed(
   webhookEventId: string,
@@ -113,9 +115,19 @@ export async function markFailed(
   const attempts = (row as { attempts?: number } | null)?.attempts ?? 0;
   const newAttempts = attempts + 1;
   const status = newAttempts >= 3 ? "dead_letter" : "failed";
+  const { retryBackoffMs } = await import("@/lib/idempotency/mutation");
+  const nextRetry =
+    status === "failed"
+      ? new Date(Date.now() + retryBackoffMs(newAttempts)).toISOString()
+      : null;
   const { error } = await db
     .from("webhook_events")
-    .update({ status, attempts: newAttempts, error: errorMsg.slice(0, 500) })
+    .update({
+      status,
+      attempts: newAttempts,
+      error: errorMsg.slice(0, 500),
+      next_retry_at: nextRetry,
+    })
     .eq("webhook_event_id", webhookEventId);
   if (error) console.warn("[webhook-inbox] markFailed", error.message);
 }
@@ -142,14 +154,31 @@ export async function staleEvents(
 }
 
 /**
- * Reset a stale event back to 'pending' so it can be re-claimed.
+ * Failed events whose backoff window has elapsed — ready for re-queue.
+ */
+export async function dueFailedEvents(limit = 10): Promise<WebhookEventRow[]> {
+  const db = requireDb();
+  const now = new Date().toISOString();
+  const { data, error } = await db
+    .from("webhook_events")
+    .select("*")
+    .eq("status", "failed")
+    .lte("next_retry_at", now)
+    .order("next_retry_at", { ascending: true })
+    .limit(limit);
+  if (error) console.warn("[webhook-inbox] dueFailed", error.message);
+  return (data ?? []) as WebhookEventRow[];
+}
+
+/**
+ * Reset a stale/failed event back to 'pending' so it can be re-claimed.
  */
 export async function resetStale(webhookEventId: string): Promise<void> {
   const db = requireDb();
   const { error } = await db
     .from("webhook_events")
-    .update({ status: "pending", claimed_at: null })
+    .update({ status: "pending", claimed_at: null, next_retry_at: null })
     .eq("webhook_event_id", webhookEventId)
-    .eq("status", "processing");
+    .in("status", ["processing", "failed"]);
   if (error) console.warn("[webhook-inbox] resetStale", error.message);
 }

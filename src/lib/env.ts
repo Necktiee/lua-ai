@@ -84,6 +84,10 @@ const EnvSchema = z.object({
   // secret เซ็น session cookie ของ dashboard (fallback ไปที่ LINE_CHANNEL_SECRET ถ้าไม่ตั้ง)
   SESSION_SECRET: z.string().optional(),
 
+  // AES-256 key for Google tokens at rest (32-byte hex/base64, or any passphrase → SHA-256).
+  // Outside the DB. If unset, tokens stored plaintext (dev only — warn in production).
+  TOKEN_ENCRYPTION_KEY: z.string().optional(),
+
   // Single-owner mode: ถ้าตั้งค่าไว้ ทุก message/event/dashboard session จะถูก attribute
   // เข้า userId นี้หมด ไม่ว่าจะแชท/ล็อกอินด้วย LINE account ไหน (whitelist ยังเช็คก่อน)
   OWNER_LINE_USER_ID: z.string().optional(),
@@ -185,6 +189,7 @@ const fallbackDefaults: Env = {
   TAVILY_API_KEY: undefined,
   LIFF_ID: undefined,
   LIFF_CHANNEL_ID: undefined,
+  TOKEN_ENCRYPTION_KEY: undefined,
   OWNER_LINE_USER_ID: undefined,
 };
 

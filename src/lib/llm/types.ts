@@ -15,6 +15,8 @@ export interface ChatOptions {
   maxOutputTokens?: number;
   /** timeout per attempt (ms) */
   timeoutMs?: number;
+  /** trace ID for correlating LLM calls with webhook events */
+  traceId?: string;
 }
 
 export interface EmbedOptions {
@@ -52,7 +54,8 @@ export class LLMError extends Error {
       | "timeout"
       | "network"
       | "bad_response"
-      | "no_keys",
+      | "no_keys"
+      | "cost_cap",
     public cause?: unknown,
   ) {
     super(message);

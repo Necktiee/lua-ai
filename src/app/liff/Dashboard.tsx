@@ -18,11 +18,13 @@ import {
   NotePencil,
   Plus,
   Sparkle,
+  Scales,
   Target,
   Trash,
   Users,
   Wallet,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 
 interface Profile {
@@ -107,6 +109,49 @@ interface FollowUp {
   created_at: string;
 }
 
+interface Reminder {
+  id: string;
+  message: string;
+  fire_at: string;
+}
+
+interface Commitment {
+  id: string;
+  title: string;
+  responsible_party: "owner" | "other";
+  counterparty: string | null;
+  due_at: string | null;
+  review_at: string | null;
+  status: "open" | "fulfilled" | "cancelled";
+}
+
+interface Decision {
+  id: string;
+  title: string;
+  options: string[];
+  rationale: string | null;
+  assumptions: string[];
+  review_at: string | null;
+  outcome: string | null;
+  status: "open" | "reviewed" | "superseded";
+  created_at: string;
+}
+
+interface FocusWindow {
+  id: string;
+  label: string;
+  day_of_week: number;
+  start_minute: number;
+  end_minute: number;
+  priority_threshold: number;
+  enabled: boolean;
+}
+
+interface CorrectionTally {
+  feature: string;
+  n: number;
+}
+
 interface Msg {
   id: string;
   role: string;
@@ -116,7 +161,11 @@ interface Msg {
 
 interface Meeting {
   id: string;
-  content: string;
+  title: string;
+  occurred_at: string;
+  participants: string[];
+  summary: string | null;
+  source: "manual" | "transcript" | "calendar" | "agent";
   created_at: string;
 }
 
@@ -159,6 +208,7 @@ interface PersonView {
 }
 
 type PageId = "overview" | "tasks" | "calendar" | "finance" | "goals" | "memory" | "knowledge" | "people" | "system";
+type Destination = "today" | "work" | "life" | "jaew";
 
 const NAV_ITEMS: Array<{
   id: PageId;
@@ -176,6 +226,38 @@ const NAV_ITEMS: Array<{
   { id: "people", label: "คน", short: "คน", icon: (c) => <Users weight="fill" className={c} /> },
   { id: "system", label: "ระบบ", short: "ระบบ", icon: (c) => <Gear weight="fill" className={c} /> },
 ];
+
+const NAV_BY_ID = new Map(NAV_ITEMS.map((item) => [item.id, item]));
+
+/** Four destinations group the nine pages to keep the bottom bar uncluttered. */
+const DESTINATIONS: Array<{
+  id: Destination;
+  label: string;
+  short: string;
+  icon: (className: string) => React.ReactNode;
+  tabs: PageId[];
+}> = [
+  { id: "today", label: "วันนี้", short: "วันนี้", icon: (c) => <House weight="fill" className={c} />, tabs: ["overview"] },
+  { id: "work", label: "งาน", short: "งาน", icon: (c) => <ListChecks weight="fill" className={c} />, tabs: ["tasks", "goals"] },
+  { id: "life", label: "ชีวิต", short: "ชีวิต", icon: (c) => <CalendarBlank weight="fill" className={c} />, tabs: ["calendar", "finance", "people"] },
+  { id: "jaew", label: "แจ๋ว", short: "แจ๋ว", icon: (c) => <Sparkle weight="fill" className={c} />, tabs: ["memory", "knowledge", "system"] },
+];
+
+function destOfPage(page: PageId): Destination {
+  return DESTINATIONS.find((d) => d.tabs.includes(page))?.id ?? "today";
+}
+
+interface UserSettingsView {
+  briefing_time: string;
+  evening_time: string;
+  briefing_enabled: boolean;
+  evening_enabled: boolean;
+  timezone: string;
+  retention_days: number;
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+}
 
 const money = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 });
 
@@ -317,12 +399,16 @@ function CardSkeleton() {
   );
 }
 
-async function safeFetch<T>(url: string, fallback: T): Promise<T> {
+async function safeFetch<T>(url: string, fallback: T, onFailure?: () => void): Promise<T> {
   try {
     const r = await fetch(url);
-    if (!r.ok) return fallback;
+    if (!r.ok) {
+      onFailure?.();
+      return fallback;
+    }
     return (await r.json()) as T;
   } catch {
+    onFailure?.();
     return fallback;
   }
 }
@@ -339,6 +425,11 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [commitments, setCommitments] = useState<Commitment[]>([]);
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [focusWindows, setFocusWindows] = useState<FocusWindow[]>([]);
+  const [correctionTally, setCorrectionTally] = useState<CorrectionTally[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -370,6 +461,11 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [flash, setFlash] = useState<{ message: string; undoId?: string } | null>(null);
+  const [settings, setSettings] = useState<UserSettingsView | null>(null);
+  const [online, setOnline] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
 
   const loadTodos = useCallback(async () => {
     const res = await safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] });
@@ -377,20 +473,29 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   }, []);
 
   const load = useCallback(async () => {
-    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, msgRes, usageRes, meetingsRes, memoriesRes, knowledgeRes, peopleRes] = await Promise.all([
-      safeFetch<StatusData | null>("/api/dashboard/status", null),
-      safeFetch<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
-      safeFetch<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=14", {}),
-      safeFetch<{ expenses?: Expense[]; summary?: ExpenseSummary | null; subscriptions?: Subscription[] }>("/api/dashboard/expenses", {}),
-      safeFetch<{ goals: Goal[] }>("/api/dashboard/goals", { goals: [] }),
-      safeFetch<{ entries: JournalEntry[] }>("/api/dashboard/journal?limit=14", { entries: [] }),
-      safeFetch<{ followUps: FollowUp[] }>("/api/dashboard/followups", { followUps: [] }),
-      safeFetch<{ messages: Msg[] }>("/api/dashboard/messages?limit=40", { messages: [] }),
-      safeFetch<UsageData | null>("/api/dashboard/usage", null),
-      safeFetch<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
-      safeFetch<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=40", { memories: [] }),
-      safeFetch<{ knowledge: Knowledge[] }>("/api/dashboard/knowledge", { knowledge: [] }),
-      safeFetch<{ people: PersonView[] }>("/api/dashboard/people?limit=60", { people: [] }),
+    setLoadError(false);
+    const fetchDashboard = <T,>(url: string, fallback: T) =>
+      safeFetch(url, fallback, () => setLoadError(true));
+    const [statusRes, todosRes, calRes, expRes, goalsRes, journalRes, fuRes, remindersRes, commitmentsRes, decisionsRes, focusRes, correctionRes, msgRes, usageRes, meetingsRes, memoriesRes, knowledgeRes, peopleRes, settingsRes] = await Promise.all([
+      fetchDashboard<StatusData | null>("/api/dashboard/status", null),
+      fetchDashboard<{ todos: Todo[] }>("/api/dashboard/todos?filter=pending", { todos: [] }),
+      fetchDashboard<{ events?: CalEvent[]; error?: string | null }>("/api/dashboard/calendar?days=14", {}),
+      fetchDashboard<{ expenses?: Expense[]; summary?: ExpenseSummary | null; subscriptions?: Subscription[] }>("/api/dashboard/expenses", {}),
+      fetchDashboard<{ goals: Goal[] }>("/api/dashboard/goals", { goals: [] }),
+      fetchDashboard<{ entries: JournalEntry[] }>("/api/dashboard/journal?limit=14", { entries: [] }),
+      fetchDashboard<{ followUps: FollowUp[] }>("/api/dashboard/followups", { followUps: [] }),
+      fetchDashboard<{ reminders: Reminder[] }>("/api/dashboard/reminders", { reminders: [] }),
+      fetchDashboard<{ commitments: Commitment[] }>("/api/dashboard/commitments", { commitments: [] }),
+      fetchDashboard<{ decisions: Decision[] }>("/api/dashboard/decisions", { decisions: [] }),
+      fetchDashboard<{ focusWindows: FocusWindow[] }>("/api/dashboard/focus-windows", { focusWindows: [] }),
+      fetchDashboard<{ counts: CorrectionTally[] }>("/api/dashboard/corrections", { counts: [] }),
+      fetchDashboard<{ messages: Msg[] }>("/api/dashboard/messages?limit=40", { messages: [] }),
+      fetchDashboard<UsageData | null>("/api/dashboard/usage", null),
+      fetchDashboard<{ meetings: Meeting[] }>("/api/dashboard/meetings", { meetings: [] }),
+      fetchDashboard<{ memories: MemoryNote[] }>("/api/dashboard/memories?limit=40", { memories: [] }),
+      fetchDashboard<{ knowledge: Knowledge[] }>("/api/dashboard/knowledge", { knowledge: [] }),
+      fetchDashboard<{ people: PersonView[] }>("/api/dashboard/people?limit=60", { people: [] }),
+      fetchDashboard<{ settings: UserSettingsView | null }>("/api/dashboard/settings", { settings: null }),
     ]);
     setStatusData(statusRes);
     setTodos(todosRes.todos ?? []);
@@ -402,12 +507,18 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     setGoals(goalsRes.goals ?? []);
     setJournal(journalRes.entries ?? []);
     setFollowUps(fuRes.followUps ?? []);
+    setReminders(remindersRes.reminders ?? []);
+    setCommitments(commitmentsRes.commitments ?? []);
+    setDecisions(decisionsRes.decisions ?? []);
+    setFocusWindows(focusRes.focusWindows ?? []);
+    setCorrectionTally(correctionRes.counts ?? []);
     setMessages(msgRes.messages ?? []);
     setUsage(usageRes);
     setMeetings(meetingsRes.meetings ?? []);
     setMemories(memoriesRes.memories ?? []);
     setKnowledge(knowledgeRes.knowledge ?? []);
     setPeople(peopleRes.people ?? []);
+    setSettings(settingsRes.settings ?? null);
     setLoaded(true);
   }, []);
 
@@ -430,6 +541,17 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [loadTodos]);
+
+  useEffect(() => {
+    const syncOnlineState = () => setOnline(navigator.onLine);
+    syncOnlineState();
+    window.addEventListener("online", syncOnlineState);
+    window.addEventListener("offline", syncOnlineState);
+    return () => {
+      window.removeEventListener("online", syncOnlineState);
+      window.removeEventListener("offline", syncOnlineState);
+    };
+  }, []);
 
   async function refresh() {
     if (refreshing) return;
@@ -489,8 +611,30 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     try {
       const r = await fetch(`/api/dashboard/todos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
       if (!r.ok) throw new Error("delete failed");
+      const data = (await r.json()) as { undo?: { id: string } | null };
+      setFlash({
+        message: `ลบงาน "${target.title}" แล้ว`,
+        undoId: data.undo?.id,
+      });
     } catch {
       setTodos(previous);
+      setFlash({ message: "ลบงานไม่สำเร็จ ลองใหม่" });
+    }
+  }
+
+  async function undoLast() {
+    if (!flash?.undoId) return;
+    try {
+      const r = await fetch("/api/dashboard/undo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: flash.undoId }),
+      });
+      if (!r.ok) throw new Error("undo failed");
+      setFlash({ message: "กู้คืนแล้ว" });
+      await load();
+    } catch {
+      setFlash({ message: "กู้คืนไม่สำเร็จ (หมดเวลาหรือใช้ไปแล้ว)" });
     }
   }
 
@@ -700,6 +844,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
 
   async function deleteMemoryItem(id: string) {
     const previous = memories;
+    const target = memories.find((m) => m.id === id);
     setMemories((prev) => prev.filter((m) => m.id !== id));
     try {
       const r = await fetch("/api/dashboard/memories", {
@@ -708,8 +853,14 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         body: JSON.stringify({ id }),
       });
       if (!r.ok) throw new Error("delete memory failed");
+      const data = (await r.json()) as { undo?: { id: string } | null };
+      setFlash({
+        message: `ลบบันทึกแล้ว${target ? `: ${target.content.slice(0, 40)}` : ""}`,
+        undoId: data.undo?.id,
+      });
     } catch {
       setMemories(previous);
+      setFlash({ message: "ลบบันทึกไม่สำเร็จ" });
     }
   }
 
@@ -728,6 +879,33 @@ export default function Dashboard({ profile }: { profile: Profile }) {
     }
   }
 
+  async function cancelReminderItem(id: string) {
+    const previous = reminders;
+    setReminders((current) => current.filter((reminder) => reminder.id !== id));
+    try {
+      const response = await fetch(`/api/dashboard/reminders?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("cancel reminder failed");
+      setFlash({ message: "ยกเลิกการเตือนแล้ว" });
+    } catch {
+      setReminders(previous);
+      setFlash({ message: "ยกเลิกการเตือนไม่สำเร็จ ลองใหม่" });
+    }
+  }
+
+  async function recordRecommendation(id: string, action: "accepted" | "dismissed") {
+    try {
+      const response = await fetch("/api/dashboard/recommendations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ feature: "commitment_ledger", recommendationKey: id, action }),
+      });
+      if (!response.ok) throw new Error("recommendation feedback failed");
+      setFlash({ message: action === "accepted" ? "บันทึกว่าเห็นด้วยแล้ว" : "จะไม่แนะนำรายการนี้ในตอนนี้" });
+    } catch {
+      setFlash({ message: "บันทึกความเห็นไม่สำเร็จ ลองใหม่" });
+    }
+  }
+
   const connectGoogle = () => {
     window.location.href = "/api/dashboard/google/connect";
   };
@@ -736,6 +914,13 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   const normalTodos = todos.filter((t) => t.priority === 2);
   const lowTodos = todos.filter((t) => t.priority === 3);
   const nextEvent = events[0];
+  const nextAction = urgentTodos[0]
+    ? { label: urgentTodos[0].title, reason: "งานด่วนจึงถูกจัดไว้ก่อน", evidence: "ข้อมูลสนับสนุน: งานนี้มีระดับความสำคัญด่วน (P1) ในรายการงานของคุณ", due: urgentTodos[0].due_at }
+    : normalTodos[0]
+      ? { label: normalTodos[0].title, reason: "งานที่รออยู่จึงเป็นลำดับถัดไป", evidence: "ข้อมูลสนับสนุน: งานนี้ยังค้างอยู่ในรายการงานปกติของคุณ", due: normalTodos[0].due_at }
+      : followUps[0]
+        ? { label: followUps[0].subject, reason: "มีรายการที่รอคำตอบ", evidence: "ข้อมูลสนับสนุน: รายการนี้อยู่ใน follow-up ที่กำลังรอคำตอบ", due: followUps[0].deadline }
+        : null;
   const categoryRows = Object.entries(expSummary?.byCategory ?? {}).sort((a, b) => b[1] - a[1]);
   const maxCategory = Math.max(1, ...categoryRows.map(([, value]) => value));
   const avgGoal = goals.length ? Math.round(goals.reduce((sum, goal) => sum + goalPct(goal), 0) / goals.length) : 0;
@@ -767,6 +952,20 @@ export default function Dashboard({ profile }: { profile: Profile }) {
   return (
     <div className="min-h-[100dvh] bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34rem),linear-gradient(180deg,#fafafa,transparent_20rem)] dark:bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_32rem),linear-gradient(180deg,#09090b,transparent_22rem)]">
       <div className="mx-auto w-full max-w-6xl px-4 py-4 pb-24 md:px-6 lg:pb-10">
+        {!online && (
+          <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <span>ออฟไลน์อยู่ ข้อมูลที่เห็นอาจไม่ใช่ข้อมูลล่าสุด และยังไม่ควรบันทึกการเปลี่ยนแปลง</span>
+            <button onClick={refresh} disabled={refreshing} className="min-h-11 rounded-full bg-amber-900 px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950">
+              ลองเชื่อมใหม่
+            </button>
+          </div>
+        )}
+        {online && loadError && (
+          <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <span>บางข้อมูลโหลดไม่สำเร็จ ข้อมูลว่างอาจไม่ได้หมายความว่ายังไม่มีรายการ</span>
+            <button onClick={refresh} disabled={refreshing} className="min-h-11 rounded-full bg-amber-900 px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950">ลองใหม่</button>
+          </div>
+        )}
         <header className="mb-4 flex items-center justify-between gap-3 rounded-[1.6rem] border border-zinc-200/70 bg-white/80 p-3 shadow-sm shadow-zinc-200/50 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/75 dark:shadow-black/20">
           <div className="flex min-w-0 items-center gap-3">
             {profile.pictureUrl ? (
@@ -779,7 +978,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
             )}
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">{profile.displayName}</p>
-              <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">โฮชิ Dashboard · {NAV_ITEMS.find((item) => item.id === activePage)?.label}</p>
+              <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">แจ๋ว · {DESTINATIONS.find((d) => d.id === destOfPage(activePage))?.label}{destOfPage(activePage) !== "today" && NAV_BY_ID.get(activePage) ? ` · ${NAV_BY_ID.get(activePage)!.label}` : ""}</p>
             </div>
           </div>
           <button
@@ -795,27 +994,76 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         <div className="grid gap-4 lg:grid-cols-[224px_1fr] lg:items-start">
           <aside className="hidden lg:sticky lg:top-4 lg:block">
             <nav className="rounded-[1.6rem] border border-zinc-200/70 bg-white/80 p-2 shadow-sm shadow-zinc-200/50 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/75 dark:shadow-black/20">
-              {NAV_ITEMS.map((item) => {
-                const active = item.id === activePage;
+              {DESTINATIONS.map((d) => {
+                const active = d.id === destOfPage(activePage);
                 return (
-                  <button
-                    key={item.id}
-                    onClick={() => go(item.id)}
-                    className={`mb-1 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left text-sm font-medium transition active:scale-[0.99] ${
-                      active
-                        ? "bg-zinc-950 text-white shadow-sm dark:bg-zinc-50 dark:text-zinc-950"
-                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    }`}
-                  >
-                    {item.icon("h-4 w-4")}
-                    {item.label}
-                  </button>
+                  <div key={d.id}>
+                    <button
+                      onClick={() => go(d.tabs[0])}
+                      className={`mb-1 flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-left text-sm font-medium transition active:scale-[0.99] ${
+                        active
+                          ? "bg-zinc-950 text-white shadow-sm dark:bg-zinc-50 dark:text-zinc-950"
+                          : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      }`}
+                    >
+                      {d.icon("h-4 w-4")}
+                      {d.label}
+                    </button>
+                    {active && d.tabs.length > 1 && (
+                      <div className="mb-1 ml-6 flex flex-col gap-0.5 border-l border-zinc-200 pl-3 dark:border-zinc-700">
+                        {d.tabs.map((tabId) => {
+                          const tab = NAV_BY_ID.get(tabId)!;
+                          const tabActive = tabId === activePage;
+                          return (
+                            <button
+                              key={tabId}
+                              onClick={() => go(tabId)}
+                              className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium transition ${
+                                tabActive ? "text-emerald-600 dark:text-emerald-300" : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                              }`}
+                            >
+                              {tab.icon("h-3.5 w-3.5")}
+                              {tab.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </nav>
           </aside>
 
           <main className="space-y-4">
+            {(() => {
+              const dest = DESTINATIONS.find((d) => d.id === destOfPage(activePage));
+              if (dest && dest.tabs.length > 1) {
+                return (
+                  <div className="flex gap-1 overflow-x-auto rounded-2xl border border-zinc-200/70 bg-white/80 p-1 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/75 lg:hidden">
+                    {dest.tabs.map((tabId) => {
+                      const tab = NAV_BY_ID.get(tabId)!;
+                      const tabActive = tabId === activePage;
+                      return (
+                        <button
+                          key={tabId}
+                          onClick={() => go(tabId)}
+                          className={`flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium transition active:scale-[0.98] ${
+                            tabActive
+                              ? "bg-zinc-950 text-white dark:bg-zinc-50 dark:text-zinc-950"
+                              : "text-zinc-500 dark:text-zinc-400"
+                          }`}
+                        >
+                          {tab.icon("h-3.5 w-3.5")}
+                          {tab.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              return null;
+            })()}
             {activePage === "overview" && (
               <>
                 <section className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
@@ -850,7 +1098,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
 
                 <section className="grid gap-4 xl:grid-cols-3">
                   <Card title="คิวโฟกัส" icon={<ListChecks weight="fill" className="h-4 w-4 text-emerald-500" />} className="xl:col-span-2">
-                    {todos.length === 0 && followUps.length === 0 ? (
+                    {todos.length === 0 && followUps.length === 0 && reminders.length === 0 ? (
                       <EmptyState title="วันนี้ดูโล่ง" hint="ถ้ามีงานใหม่ พิมพ์ใน LINE หรือเพิ่มจากหน้างานได้เลย" icon={<CheckCircle weight="fill" className="h-5 w-5" />} />
                     ) : (
                       <div className="space-y-3">
@@ -875,6 +1123,15 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                             </div>
                           </div>
                         ))}
+                        {reminders.slice(0, 3).map((reminder) => (
+                          <div key={reminder.id} className="flex items-center gap-3 rounded-2xl border border-sky-200 bg-sky-50/80 p-3 dark:border-sky-900/60 dark:bg-sky-950/20">
+                            <Clock weight="fill" className="h-4 w-4 flex-shrink-0 text-sky-600" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">{reminder.message}</p>
+                              <p className="text-xs text-zinc-500 dark:text-zinc-400">เตือน {fmtDate(reminder.fire_at)}</p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </Card>
@@ -891,6 +1148,69 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                     )}
                   </Card>
                 </section>
+                {nextAction && (
+                  <Card title="สิ่งที่ควรทำต่อ" icon={<Sparkle weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{nextAction.label}</p>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{nextAction.reason}</p>
+                      </div>
+                      <button onClick={() => setEvidenceOpen(true)} className="min-h-11 rounded-full border border-zinc-200 px-4 text-xs font-medium text-zinc-700 dark:border-zinc-700 dark:text-zinc-200">ดูเหตุผล</button>
+                    </div>
+                  </Card>
+                )}
+                {commitments.length > 0 && (
+                  <Card title={`ข้อผูกมัดที่ยังเปิดอยู่ (${commitments.length})`} icon={<ClipboardText weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">ข้อเสนออ่านอย่างเดียว: ตรวจสอบก่อนสร้างงาน เตือน หรือส่งข้อความ</p>
+                    <ul className="space-y-2">
+                      {commitments.slice(0, 3).map((commitment) => (
+                        <li key={commitment.id} className="rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
+                          <p className="font-medium text-zinc-800 dark:text-zinc-100">{commitment.title}</p>
+                          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{commitment.responsible_party === "owner" ? "คุณรับผิดชอบ" : `รอ ${commitment.counterparty || "อีกฝ่าย"}`}{commitment.due_at ? ` · ${fmtDate(commitment.due_at)}` : ""}</p>
+                          <div className="mt-2 flex gap-2"><button type="button" onClick={() => recordRecommendation(commitment.id, "accepted")} className="min-h-11 rounded-xl px-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400">รับทราบ</button><button type="button" onClick={() => recordRecommendation(commitment.id, "dismissed")} className="min-h-11 rounded-xl px-2 text-xs text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400">ไม่ใช่ตอนนี้</button></div>
+                        </li>
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+                {decisions.length > 0 && (
+                  <Card title={`การตัดสินใจที่ยังเปิดอยู่ (${decisions.length})`} icon={<Scales weight="fill" className="h-4 w-4 text-amber-500" />}>
+                    <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">ระบบบันทึกไว้เพื่อทบทวนผลลัพธ์ในภายหลัง — ไม่ส่งข้อความอัตโนมัติ</p>
+                    <ul className="space-y-2">
+                      {decisions.slice(0, 3).map((decision) => (
+                        <li key={decision.id} className="rounded-2xl bg-zinc-50 p-3 text-sm dark:bg-zinc-950/45">
+                          <p className="font-medium text-zinc-800 dark:text-zinc-100">{decision.title}</p>
+                          {decision.rationale && <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{decision.rationale}</p>}
+                          {decision.review_at && <p className="mt-1 text-xs text-zinc-400">ทบทวน {fmtDate(decision.review_at)}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+                {(focusWindows.length > 0 || correctionTally.length > 0) && (
+                  <Card title="ระบบปรับตัว" icon={<Sparkle weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                    {focusWindows.length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">ช่วงโฟกัส ({focusWindows.length})</p>
+                        <ul className="mt-1 space-y-1">
+                          {focusWindows.slice(0, 3).map((w) => (
+                            <li key={w.id} className="text-xs text-zinc-600 dark:text-zinc-300">{["อาทิตย์","จันทร์","อังคาร","พุธ","พฤหัส","ศุกร์","เสาร์"][w.day_of_week]} · {Math.floor(w.start_minute/60).toString().padStart(2,"0")}:{(w.start_minute%60).toString().padStart(2,"0")}–{Math.floor(w.end_minute/60).toString().padStart(2,"0")}:{(w.end_minute%60).toString().padStart(2,"0")} {w.enabled ? "· เปิด" : "· ปิด"}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {correctionTally.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">การแก้ของเจ้าของ ({correctionTally.reduce((s,c) => s+c.n, 0)})</p>
+                        <ul className="mt-1 space-y-1">
+                          {correctionTally.slice(0, 5).map((c) => (
+                            <li key={c.feature} className="text-xs text-zinc-600 dark:text-zinc-300">{c.feature} · {c.n} ครั้ง</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </Card>
+                )}
               </>
             )}
 
@@ -1026,6 +1346,23 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   </Card>
                   <CommandHint>เพิ่มงาน: “เตือนทำรายงานพรุ่งนี้ 9 โมง” · แก้: “แก้งานที่ 2 เป็น...” · ลบ: “ลบงานที่ 2” · ติดตาม: “รอคุณ A ส่งไฟล์ศุกร์นี้”</CommandHint>
                 </div>
+                <Card title={`การเตือนที่ตั้งไว้ (${reminders.length})`} icon={<Clock weight="fill" className="h-4 w-4 text-sky-500" />}>
+                  {reminders.length === 0 ? (
+                    <EmptyState title="ยังไม่มีการเตือนที่รออยู่" hint="พิมพ์ใน LINE เช่น “เตือนโทรหาลูกค้าพรุ่งนี้ 10 โมง”" icon={<Clock className="h-5 w-5" />} />
+                  ) : (
+                    <ul className="space-y-2">
+                      {reminders.map((reminder) => (
+                        <li key={reminder.id} className="flex items-center gap-3 rounded-2xl bg-zinc-50 p-3 dark:bg-zinc-950/45">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{reminder.message}</p>
+                            <p className="mt-1 text-xs text-zinc-400">{fmtDate(reminder.fire_at)}</p>
+                          </div>
+                          <button onClick={() => cancelReminderItem(reminder.id)} className="min-h-11 rounded-full border border-red-200 px-3 text-xs font-medium text-red-600 dark:border-red-900 dark:text-red-300">ยกเลิก</button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Card>
               </>
             )}
 
@@ -1075,14 +1412,15 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                         <ul className="space-y-3">
                           {meetings.slice(0, 5).map((meeting) => (
                             <li key={meeting.id} className="text-sm">
-                              <p className="mb-1 text-xs text-zinc-400">{fmtDate(meeting.created_at)}</p>
-                              <p className="line-clamp-4 whitespace-pre-line text-zinc-700 dark:text-zinc-300">{meeting.content}</p>
+                              <p className="font-medium text-zinc-800 dark:text-zinc-100">{meeting.title}</p>
+                              <p className="mb-1 text-xs text-zinc-400">{fmtDate(meeting.occurred_at || meeting.created_at)}{meeting.participants?.length ? ` · ${meeting.participants.join(", ")}` : ""}</p>
+                              {meeting.summary && <p className="line-clamp-4 whitespace-pre-line text-zinc-700 dark:text-zinc-300">{meeting.summary}</p>}
                             </li>
                           ))}
                         </ul>
                       )}
                     </Card>
-                    <CommandHint>ก่อนประชุมพิมพ์ “สรุปประชุมวันนี้” หรือส่งโน้ตประชุมมา โฮชิจะจัดเก็บและดึงมาให้ในหน้าปฏิทิน</CommandHint>
+                    <CommandHint>ก่อนประชุมพิมพ์ “สรุปประชุมวันนี้” หรือส่งโน้ตประชุมมา แจ๋วจะจัดเก็บและดึงมาให้ในหน้าปฏิทิน</CommandHint>
                   </div>
                 </div>
               </>
@@ -1273,21 +1611,21 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                     })}
                   </div>
                 )}
-                <CommandHint>เพิ่มเป้า: “ตั้งเป้าวิ่ง 5 กม./วัน” · อัปเดต: “วันนี้วิ่ง 3 กม.” โฮชิจะจับคู่กับเป้าหมายให้เอง</CommandHint>
+                <CommandHint>เพิ่มเป้า: “ตั้งเป้าวิ่ง 5 กม./วัน” · อัปเดต: “วันนี้วิ่ง 3 กม.” แจ๋วจะจับคู่กับเป้าหมายให้เอง</CommandHint>
               </>
             )}
 
             {activePage === "memory" && (
               <>
                 <Card className="bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-950">
-                  <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">สมองสำรองของโฮชิ</h1>
+                  <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">สมองสำรองของแจ๋ว</h1>
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">แยกความจำทั่วไป ประชุม journal และประวัติแชท เพื่อค้นภาพรวมชีวิตจากสิ่งที่ส่งเข้า LINE</p>
                 </Card>
 
                 <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
                   <Card title={`บันทึกล่าสุด (${memories.length})`} icon={<NotePencil weight="fill" className="h-4 w-4 text-emerald-500" />}>
                     {memories.length === 0 ? (
-                      <EmptyState title="ยังไม่มีบันทึก" hint="ส่งข้อความ รูป ลิงก์ หรือไฟล์ให้โฮชิจำ แล้วจะขึ้นที่นี่" icon={<NotePencil className="h-5 w-5" />} />
+                      <EmptyState title="ยังไม่มีบันทึก" hint="ส่งข้อความ รูป ลิงก์ หรือไฟล์ให้แจ๋วจำ แล้วจะขึ้นที่นี่" icon={<NotePencil className="h-5 w-5" />} />
                     ) : (
                       <ul className="space-y-3">
                         {memories.map((memory) => (
@@ -1329,7 +1667,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                         <ul className="max-h-80 space-y-2 overflow-y-auto pr-1">
                           {messages.slice().reverse().map((message) => (
                             <li key={message.id} className="rounded-2xl bg-zinc-50 p-3 text-xs dark:bg-zinc-950/45">
-                              <span className={`font-semibold ${message.role === "user" ? "text-zinc-950 dark:text-zinc-50" : "text-emerald-600 dark:text-emerald-300"}`}>{message.role === "user" ? "คุณ" : "โฮชิ"}: </span>
+                              <span className={`font-semibold ${message.role === "user" ? "text-zinc-950 dark:text-zinc-50" : "text-emerald-600 dark:text-emerald-300"}`}>{message.role === "user" ? "คุณ" : "แจ๋ว"}: </span>
                               <span className="text-zinc-500">{message.content.slice(0, 180)}</span>
                             </li>
                           ))}
@@ -1346,7 +1684,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                 <Card className="bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/25 dark:to-zinc-900">
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300">Knowledge base</p>
-                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">สิ่งที่โฮชิรู้จักคุณเป็นการถาวร</h1>
+                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">สิ่งที่แจ๋วรู้จักคุณเป็นการถาวร</h1>
                     <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ข้อเท็จจริงที่ใส่เข้าทุกการตอบ (priority 1-2) หรือค้นเจอตอนเกี่ยวข้อง (priority 3) เช่น ชื่อ อาชีพ คนสำคัญ ความชอบ และคำสั่งประจำ</p>
                   </div>
                 </Card>
@@ -1408,7 +1746,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
 
                 {knowledge.length === 0 ? (
                   <Card title="ยังไม่มีข้อมูลถาวร" icon={<Brain weight="fill" className="h-4 w-4 text-emerald-500" />}>
-                    <EmptyState title="สอนให้โฮชิรู้จักคุณ" hint="เพิ่มเองด้านบน หรือส่งใน LINE ว่า “จดไว้ว่าชื่อ...” “จำไว้ว่าฉันชอบ...” แล้วข้อมูลจะขึ้นที่นี่" icon={<Brain className="h-5 w-5" />} />
+                    <EmptyState title="สอนให้แจ๋วรู้จักคุณ" hint="เพิ่มเองด้านบน หรือส่งใน LINE ว่า “จดไว้ว่าชื่อ...” “จำไว้ว่าฉันชอบ...” แล้วข้อมูลจะขึ้นที่นี่" icon={<Brain className="h-5 w-5" />} />
                   </Card>
                 ) : (
                   <div className="grid gap-4">
@@ -1509,8 +1847,8 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                 <Card className="bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/25 dark:to-zinc-900">
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300">Relationships</p>
-                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">คนที่โฮชิรู้จัก</h1>
-                    <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ระดับความสำคัญ (P1-P4) ใช้ตอนโฮชิตัดสินใจจัดลำดับ follow-up, เตือน และเตรียมประชุม — ยิ่ง P ต่ำยิ่งสำคัญ</p>
+                    <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50 md:text-4xl">คนที่แจ๋วรู้จัก</h1>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">ระดับความสำคัญ (P1-P4) ใช้ตอนแจ๋วตัดสินใจจัดลำดับ follow-up, เตือน และเตรียมประชุม — ยิ่ง P ต่ำยิ่งสำคัญ</p>
                   </div>
                 </Card>
 
@@ -1563,7 +1901,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
 
                 {people.length === 0 ? (
                   <Card title="ยังไม่มีคนในระบบ" icon={<Users weight="fill" className="h-4 w-4 text-emerald-500" />}>
-                    <EmptyState title="โฮชิยังไม่รู้จักใคร" hint="เพิ่มเองด้านบน หรือพูดคุยใน LINE แล้วโฮชิจะจดชื่อคนให้" icon={<Users className="h-5 w-5" />} />
+                    <EmptyState title="แจ๋วยังไม่รู้จักใคร" hint="เพิ่มเองด้านบน หรือพูดคุยใน LINE แล้วแจ๋วจะจดชื่อคนให้" icon={<Users className="h-5 w-5" />} />
                   </Card>
                 ) : (
                   <div className="grid gap-4">
@@ -1675,6 +2013,124 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-300 dark:text-zinc-600">ดู integration สำคัญ, Google scopes, usage provider และสัญญาณผิดปกติของ AI pool</p>
                 </Card>
 
+                <Card title="การตั้งค่า" icon={<Gear weight="fill" className="h-4 w-4 text-emerald-500" />}>
+                  {settings ? (
+                    <div className="space-y-4 text-sm">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-xs text-zinc-500">เขตเวลา</span>
+                        <input
+                          className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                          value={settings.timezone}
+                          onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
+                        />
+                      </label>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-zinc-500">Briefing</span>
+                          <input
+                            type="time"
+                            className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                            value={settings.briefing_time.slice(0, 5)}
+                            onChange={(e) => setSettings({ ...settings, briefing_time: e.target.value })}
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-zinc-500">Evening</span>
+                          <input
+                            type="time"
+                            className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                            value={settings.evening_time.slice(0, 5)}
+                            onChange={(e) => setSettings({ ...settings, evening_time: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <label className="flex min-h-11 items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={settings.quiet_hours_enabled}
+                          onChange={(e) => setSettings({ ...settings, quiet_hours_enabled: e.target.checked })}
+                        />
+                        เปิด Quiet hours
+                      </label>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-zinc-500">Quiet เริ่ม</span>
+                          <input
+                            type="time"
+                            className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                            value={(settings.quiet_hours_start ?? "22:00").slice(0, 5)}
+                            onChange={(e) => setSettings({ ...settings, quiet_hours_start: e.target.value })}
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-zinc-500">Quiet จบ</span>
+                          <input
+                            type="time"
+                            className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                            value={(settings.quiet_hours_end ?? "07:00").slice(0, 5)}
+                            onChange={(e) => setSettings({ ...settings, quiet_hours_end: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-xs text-zinc-500">เก็บ memory/messages (วัน, 0=ตลอด)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={3650}
+                          className="min-h-11 rounded-xl border border-zinc-200 bg-white px-3 dark:border-zinc-700 dark:bg-zinc-950"
+                          value={settings.retention_days}
+                          onChange={(e) => setSettings({ ...settings, retention_days: Number(e.target.value) || 0 })}
+                        />
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="min-h-11 rounded-full bg-zinc-950 px-4 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950"
+                          onClick={async () => {
+                            const r = await fetch("/api/dashboard/settings", {
+                              method: "PATCH",
+                              headers: { "content-type": "application/json" },
+                              body: JSON.stringify(settings),
+                            });
+                            if (r.ok) {
+                              const data = (await r.json()) as { settings: UserSettingsView };
+                              setSettings(data.settings);
+                              setFlash({ message: "บันทึกการตั้งค่าแล้ว" });
+                            } else {
+                              setFlash({ message: "บันทึกการตั้งค่าไม่สำเร็จ" });
+                            }
+                          }}
+                        >
+                          บันทึก
+                        </button>
+                        <a
+                          href="/api/dashboard/export"
+                          className="inline-flex min-h-11 items-center rounded-full border border-zinc-200 px-4 text-xs font-medium dark:border-zinc-700"
+                        >
+                          ส่งออกข้อมูล
+                        </a>
+                        {statusData?.google.connected && (
+                          <button
+                            className="min-h-11 rounded-full border border-red-200 px-4 text-xs font-medium text-red-600 dark:border-red-900"
+                            onClick={async () => {
+                              if (!window.confirm("ยกเลิกการเชื่อม Google?")) return;
+                              const r = await fetch("/api/dashboard/google/disconnect", { method: "POST" });
+                              if (r.ok) {
+                                setFlash({ message: "ยกเลิก Google แล้ว" });
+                                await load();
+                              }
+                            }}
+                          >
+                            ตัดการเชื่อม Google
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-zinc-400">โหลดการตั้งค่าไม่สำเร็จ</p>
+                  )}
+                </Card>
+
                 <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
                   <Card title="Integration" icon={<Gear weight="fill" className="h-4 w-4 text-emerald-500" />}>
                     {statusData ? (
@@ -1693,7 +2149,7 @@ export default function Dashboard({ profile }: { profile: Profile }) {
                               <p className="text-xs text-zinc-400">{statusData.google.connected ? "เชื่อมต่อแล้ว" : "ยังไม่เชื่อม"}</p>
                             </div>
                             {!statusData.google.connected && (
-                              <button onClick={connectGoogle} className="inline-flex items-center gap-1.5 rounded-full bg-zinc-950 px-3 py-2 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950">
+                              <button onClick={connectGoogle} className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-zinc-950 px-3 py-2 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950">
                                 <GoogleLogo weight="bold" className="h-3.5 w-3.5" />
                                 เชื่อม
                               </button>
@@ -1752,19 +2208,58 @@ export default function Dashboard({ profile }: { profile: Profile }) {
         </div>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90 lg:hidden">
-        <div className="mx-auto grid max-w-2xl grid-cols-9 gap-1">
-          {NAV_ITEMS.map((item) => {
-            const active = item.id === activePage;
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90 lg:hidden" aria-label="เมนูหลัก">
+        <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1">
+          {DESTINATIONS.map((d) => {
+            const active = d.id === destOfPage(activePage);
             return (
-              <button key={item.id} onClick={() => go(item.id)} className={`flex flex-col items-center gap-1 rounded-2xl px-1 py-2 text-[10px] font-medium transition active:scale-[0.96] ${active ? "bg-zinc-950 text-white dark:bg-zinc-50 dark:text-zinc-950" : "text-zinc-500"}`}>
-                {item.icon("h-4 w-4")}
-                {item.short}
+              <button
+                key={d.id}
+                onClick={() => go(d.tabs[0])}
+                className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-2xl px-1 py-2 text-[11px] font-medium transition active:scale-[0.96] ${active ? "bg-zinc-950 text-white dark:bg-zinc-50 dark:text-zinc-950" : "text-zinc-500"}`}
+              >
+                {d.icon("h-5 w-5")}
+                {d.short}
               </button>
             );
           })}
         </div>
       </nav>
+
+      {evidenceOpen && nextAction && (
+        <div className="fixed inset-0 z-40 flex items-end bg-black/35 p-3 sm:items-center sm:justify-center" role="presentation" onClick={() => setEvidenceOpen(false)}>
+          <section className="w-full max-w-md rounded-[1.6rem] bg-white p-5 shadow-2xl dark:bg-zinc-900" role="dialog" aria-modal="true" aria-label="เหตุผลและข้อมูลสนับสนุน" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-300">Why this action</p>
+                <h2 className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-100">{nextAction.label}</h2>
+              </div>
+              <button onClick={() => setEvidenceOpen(false)} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-zinc-500" aria-label="ปิดเหตุผล"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="mt-4 rounded-2xl bg-zinc-50 p-4 text-sm text-zinc-700 dark:bg-zinc-950/50 dark:text-zinc-300">
+              <p>{nextAction.evidence}</p>
+              {nextAction.due && <p className="mt-2 text-xs text-zinc-500">กำหนดเวลา: {fmtDate(nextAction.due)}</p>}
+            </div>
+            <button onClick={() => go("tasks")} className="mt-4 min-h-11 rounded-full bg-zinc-950 px-4 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950">เปิดรายการที่เกี่ยวข้อง</button>
+          </section>
+        </div>
+      )}
+
+      <div className="pointer-events-none fixed inset-x-0 bottom-20 z-30 flex justify-center px-4 lg:bottom-6" aria-live="polite" aria-atomic="true">
+        {flash && (
+          <div className="pointer-events-auto flex max-w-md items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+            <span className="text-zinc-800 dark:text-zinc-100">{flash.message}</span>
+            {flash.undoId && (
+              <button onClick={undoLast} className="min-h-11 rounded-full bg-zinc-950 px-3 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950">
+                เลิกทำ
+              </button>
+            )}
+            <button onClick={() => setFlash(null)} className="min-h-11 px-2 text-xs text-zinc-400" aria-label="ปิดการแจ้งเตือน">
+              ปิด
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

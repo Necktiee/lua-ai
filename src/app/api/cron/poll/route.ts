@@ -7,7 +7,7 @@
 import { authorizeCron } from "@/lib/cron/auth";
 import { filterAllowed } from "@/lib/auth/whitelist";
 import { dueReminders, markFired, releaseFired } from "@/lib/remind/schedule";
-import { staleEvents, resetStale } from "@/lib/webhook/inbox";
+import { staleEvents, dueFailedEvents, resetStale } from "@/lib/webhook/inbox";
 import { pushText } from "@/lib/line";
 import { BANGKOK } from "@/lib/tz";
 
@@ -19,13 +19,14 @@ export async function GET(req: Request) {
   const denied = authorizeCron(req);
   if (denied) return denied;
 
-  // Reset stale webhook events (stuck in 'processing' > 5 min) back to 'pending'
-  // so they're visible and retryable. Full reprocessing requires push (reply
-  // token expired) and is deferred to Phase 9 observability work.
+  let resetCount = 0;
+  // Reset stale webhook events (stuck in 'processing' > 5 min) + failed past backoff
   try {
     const stale = await staleEvents(5, 10);
-    for (const ev of stale) {
+    const failed = await dueFailedEvents(10);
+    for (const ev of [...stale, ...failed]) {
       await resetStale(ev.webhook_event_id);
+      resetCount++;
     }
   } catch (e) {
     console.warn("[poll] stale webhook reset failed", (e as Error).message);
@@ -54,5 +55,5 @@ export async function GET(req: Request) {
       console.error("[poll] fire failed", e);
     }
   }
-  return Response.json({ fired, total: due.length });
+  return Response.json({ fired, total: due.length, webhookResets: resetCount });
 }

@@ -34,6 +34,45 @@ export async function listJournalEntries(userId: string, limit = 14): Promise<Jo
   return (data ?? []) as JournalEntry[];
 }
 
+/** Manual journal entry (user wrote their own). */
+export async function addJournalEntry(
+  userId: string,
+  content: string,
+  date?: Date,
+  timeZone?: string,
+): Promise<JournalEntry | null> {
+  const db = requireDb();
+  await touchUser(userId);
+  const dateStr = timeZone ? localDateStr(date ?? new Date(), timeZone) : bangkokDateStr(date ?? new Date());
+  const { data, error } = await db
+    .from("journal_entries")
+    .upsert({
+      user_id: userId,
+      entry_date: dateStr,
+      content,
+      auto_generated: false,
+      related_memory_ids: [],
+    }, { onConflict: "user_id,entry_date" })
+    .select()
+    .single();
+  if (error) { console.warn("[journal] add", error.message); return null; }
+  return data as JournalEntry;
+}
+
+/** Search journal entries by text content. */
+export async function searchJournalEntries(userId: string, query: string, limit = 10): Promise<JournalEntry[]> {
+  const db = requireDb();
+  const { data, error } = await db
+    .from("journal_entries")
+    .select("*")
+    .eq("user_id", userId)
+    .ilike("content", `%${query.replace(/[%_\\]/g, "\\$&")}%`)
+    .order("entry_date", { ascending: false })
+    .limit(limit);
+  if (error) console.warn("[journal] search", error.message);
+  return (data ?? []) as JournalEntry[];
+}
+
 export async function generateAndStoreJournal(
   userId: string,
   date: Date = new Date(),

@@ -65,7 +65,7 @@ export async function POST(req: Request) {
   }
   const priority = isPriority(body.priority) ? body.priority : undefined;
 
-  const knowledge = await upsertKnowledge({
+  const result = await upsertKnowledge({
     userId,
     category: body.category,
     key: key.slice(0, 120),
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
     priority,
     source: "user",
   });
-  return Response.json({ knowledge });
+  return Response.json({ knowledge: result.knowledge, previousValue: result.previousValue });
 }
 
 export async function PATCH(req: Request) {

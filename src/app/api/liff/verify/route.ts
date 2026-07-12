@@ -9,7 +9,11 @@ import { touchUser } from "@/lib/db/client";
 import { isUserAllowed } from "@/lib/auth/whitelist";
 import { signSession, SESSION_COOKIE } from "@/lib/auth/session";
 import { env, hasLiff } from "@/lib/env";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+
+const LIFF_VERIFY_LIMIT = 10;
+const LIFF_VERIFY_WINDOW = 60;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +29,11 @@ export async function POST(req: Request) {
   if (!hasLiff()) {
     return Response.json({ error: "LIFF not configured" }, { status: 503 });
   }
+
+  const h = await headers();
+  const ip = h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rl = await rateLimit(`liff:${ip}`, LIFF_VERIFY_LIMIT, LIFF_VERIFY_WINDOW);
+  if (!rl.success) return rateLimitResponse(rl);
 
   let body: { idToken?: string };
   try {

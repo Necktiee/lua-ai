@@ -55,6 +55,20 @@ export async function chat({
 }: ChatRequest): Promise<ChatResult> {
   const startedAt = Date.now();
 
+  try {
+    const { assertUnderCostCap } = await import("./cost-cap");
+    const cap = await assertUnderCostCap();
+    if (!cap.ok) {
+      throw new LLMError(
+        `daily cost hard cap exceeded ($${cap.total.toFixed(4)})`,
+        "cost_cap",
+      );
+    }
+  } catch (e) {
+    if (e instanceof LLMError) throw e;
+    // DB unavailable in unit tests — skip cap
+  }
+
   let attempts = 0;
   let lastErr: unknown;
 
@@ -69,16 +83,23 @@ export async function chat({
   for (const cfg of cfgs) {
     if (cfg.keys.length === 0) continue;
 
+    const { isProviderAvailable, recordSuccess, recordFailure } = await import("./circuit-breaker");
+    if (!isProviderAvailable(cfg.name)) {
+      lastErr = new LLMError(`circuit open for ${cfg.name}`, "all_keys_exhausted");
+      continue;
+    }
+
     const start = Math.floor(Math.random() * cfg.keys.length);
     for (let i = 0; i < cfg.keys.length; i++) {
       const keyIdx = (start + i) % cfg.keys.length;
       if (!isAvailable(cfg.name, keyIdx, cfg.rpmPerKey, cfg.rpdPerKey)) continue;
 
-      attempts++;
-      try {
-        const { text, usage } = await callOnce(cfg, keyIdx, messages, options);
-        markCall(cfg.name, keyIdx);
-        const model = options.lite && cfg.liteModel ? cfg.liteModel : cfg.chatModel;
+        attempts++;
+        try {
+          const { text, usage } = await callOnce(cfg, keyIdx, messages, options);
+          markCall(cfg.name, keyIdx);
+          recordSuccess(cfg.name);
+          const model = options.lite && cfg.liteModel ? cfg.liteModel : cfg.chatModel;
         const elapsedMs = Date.now() - startedAt;
         recordUsage({
           provider: cfg.name,
@@ -88,6 +109,7 @@ export async function chat({
           totalTokens: usage.totalTokens,
           elapsedMs,
           attempts,
+          traceId: options.traceId,
         });
         return {
           text,
@@ -99,6 +121,7 @@ export async function chat({
         };
       } catch (err) {
         lastErr = err;
+        recordFailure(cfg.name, (err as Error)?.message);
         const status = (err as { status?: number }).status;
         // 429, 403 (gemini ส่งตอน quota), 408 หรือ 5xx → retry key ถัดไป
         const retryable =

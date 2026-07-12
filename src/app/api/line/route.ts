@@ -24,6 +24,7 @@ import {
   startLoadingAnimation,
 } from "@/lib/line";
 import { handle } from "@/lib/agent/handle";
+import { getPromptVersions } from "@/lib/agent/prompts";
 import { signOAuthState } from "@/lib/auth/oauth-state";
 import { receiveEvent, claimEvent, markDone, markFailed } from "@/lib/webhook/inbox";
 import { logMessage } from "@/lib/memory/conversation";
@@ -43,6 +44,7 @@ interface LineEvent {
     text?: string;
   };
   unsend?: { messageId: string };
+  postback?: { data: string; params?: Record<string, unknown> };
 }
 
 export async function POST(req: Request) {
@@ -80,16 +82,18 @@ export async function POST(req: Request) {
       continue;
     }
 
-    if (ev.type !== "message") continue;
+    if (ev.type !== "message" && ev.type !== "postback") continue;
     const webhookEventId = ev.webhookEventId ?? ev.message?.id ?? crypto.randomUUID();
     const userId = ev.source?.userId ?? undefined;
-    const text = ev.message?.type === "text" ? (ev.message.text ?? "").trim() : "";
+    const text = ev.type === "postback"
+      ? (ev.postback?.data ?? "")
+      : ev.message?.type === "text" ? (ev.message.text ?? "").trim() : "";
     const inserted = await receiveEvent({
       webhookEventId,
       userId,
       replyToken: ev.replyToken,
       sourceType: ev.source ? "user" : undefined,
-      messageType: ev.message?.type,
+      messageType: ev.type === "postback" ? "postback" : ev.message?.type,
       messageId: ev.message?.id,
       textContent: text,
     });
@@ -140,6 +144,29 @@ async function processEvent(webhookEventId: string): Promise<void> {
       return;
     }
 
+    // Handle postback event — structured button tap from Flex message
+    if (claimed.message_type === "postback") {
+      const data = claimed.text_content ?? "";
+      try {
+        const { handlePostback } = await import("@/lib/agent/postback");
+        const result = await handlePostback(userId, data, webhookEventId);
+        if (replyToken) {
+          const sent = await replyText(replyToken, result.text);
+          if (!sent) await pushText(userId, result.text);
+        } else {
+          await pushText(userId, result.text);
+        }
+        await logMessage(userId, "assistant", result.text, { delivered: true }, true, claimed.trace_id ?? undefined);
+      } catch (e) {
+        console.error("[webhook] postback error", e);
+        await pushText(userId, "ขออภัย มีข้อผิดพลาด");
+        await markFailed(webhookEventId, (e as Error).message);
+        return;
+      }
+      await markDone(webhookEventId);
+      return;
+    }
+
     await startLoadingAnimation(userId, 20);
 
     if (isCalendarConnectIntent(text)) {
@@ -161,7 +188,7 @@ async function processEvent(webhookEventId: string): Promise<void> {
       if (!env.LIFF_ID) {
         await pushText(userId, "ยังไม่ได้เปิด LIFF dashboard — ตั้งค่า LIFF_ID ก่อน");
       } else {
-        await pushText(userId, `เปิด dashboard ของโฮชิได้ที่ลิงก์นี้:\nhttps://liff.line.me/${env.LIFF_ID}`);
+        await pushText(userId, `เปิด dashboard ของแจ๋วได้ที่ลิงก์นี้:\nhttps://liff.line.me/${env.LIFF_ID}`);
       }
       await markDone(webhookEventId);
       return;
@@ -190,6 +217,8 @@ async function processEvent(webhookEventId: string): Promise<void> {
         text,
         hasAttachment: Boolean(attachment),
         attachment,
+        webhookEventId,
+        traceId: claimed.trace_id ?? undefined,
       });
       const replyIsFlex = typeof reply !== "string";
       const replyText_ = replyIsFlex ? reply.text : reply;
@@ -221,7 +250,7 @@ async function processEvent(webhookEventId: string): Promise<void> {
         }
       }
 
-      await logMessage(userId, "assistant", replyText_, { delivered }, delivered);
+      await logMessage(userId, "assistant", replyText_, { delivered, prompt_versions: getPromptVersions() }, delivered, claimed.trace_id ?? undefined);
       await markDone(webhookEventId);
     } catch (e) {
       console.error("[webhook] handle error", e);
@@ -234,7 +263,7 @@ async function processEvent(webhookEventId: string): Promise<void> {
           // ignore secondary failure
         }
       }
-      await logMessage(userId, "assistant", errorMsg, { delivered: errorDelivered, error: true }, errorDelivered);
+      await logMessage(userId, "assistant", errorMsg, { delivered: errorDelivered, error: true }, errorDelivered, claimed.trace_id ?? undefined);
       await markFailed(webhookEventId, (e as Error).message);
     }
   } catch (e) {
@@ -248,5 +277,5 @@ function isCalendarConnectIntent(text: string) {
 }
 
 function isDashboardIntent(text: string) {
-  return /^(dashboard|เปิด\s*dashboard|เปิด\s*แดชบอร์ด|เมนู|menu|หน้าหลัก|อับดุล\s*อยู่ไหน|โฮชิ\s*อยู่ไหน)\b/i.test(text);
+  return /^(dashboard|เปิด\s*dashboard|เปิด\s*แดชบอร์ด|เมนู|menu|หน้าหลัก|อับดุล\s*อยู่ไหน|โฮชิ\s*อยู่ไหน|แจ๋ว\s*อยู่ไหน|เปิด\s*แจ๋ว|เปิด\s*อีแจ๋ว)\b/i.test(text);
 }
